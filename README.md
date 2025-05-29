@@ -4,6 +4,8 @@ A community plugin for Obsidian that provides visual aids for [SafeLearn](https:
 
 ---
 
+[![GitHub Repo](https://img.shields.io/badge/GitHub-safeLearn--Obsidian--plugin-181717?style=for-the-badge&logo=github)](https://github.com/UnterrainerInformatik/safeLearn-Obsidian-plugin)
+
 ## ✨ Features
 
 ### 🔹 Fragment Support (`##fragment`)
