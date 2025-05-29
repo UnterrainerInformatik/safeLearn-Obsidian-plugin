@@ -1,12 +1,12 @@
-/**
- * Obsidian Plugin: SafeLearn Plugin
- * Provides visual and structural enhancements for SafeLearn-specific tags.
- * Compatible with plain JavaScript use (no bundler required).
- */
+const { Plugin } = require('obsidian');
 
-class SafeLearnPlugin extends Plugin {
+module.exports = class SafeLearnPlugin extends Plugin {
   async onload() {
     console.log("✅ SafeLearn Plugin loaded");
+
+    // Wenn du styles.css verwendest, kannst du das hier weglassen
+    // this.addStyles();
+
     this.registerEvent(this.app.workspace.on("layout-change", () => this.processAll()));
   }
 
@@ -81,5 +81,3 @@ class SafeLearnPlugin extends Plugin {
     });
   }
 };
-
-module.exports = SafeLearnPlugin;
