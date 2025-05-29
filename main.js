@@ -5,8 +5,6 @@
  * and Reveal.js features like side-by-side columns.
  */
 
-import { Plugin } from "obsidian";
-
 export default class SafeLearnPlugin extends Plugin {
   async onload() {
     this.addStyles();
