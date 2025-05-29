@@ -1,11 +1,10 @@
 /**
  * Obsidian Plugin: SafeLearn Plugin
- * Provides visual and structural enhancements for SafeLearn-specific tags,
- * including highlighting of '##fragment', permission-based visibility blocks,
- * and Reveal.js features like side-by-side columns.
+ * Provides visual and structural enhancements for SafeLearn-specific tags.
+ * Compatible with plain JavaScript use (no bundler required).
  */
 
-export default class SafeLearnPlugin extends Plugin {
+class SafeLearnPlugin extends Plugin {
   async onload() {
     this.addStyles();
     this.registerDomEvent(document, "DOMContentLoaded", () => {
@@ -86,7 +85,7 @@ export default class SafeLearnPlugin extends Plugin {
     }
   }
 
-  highlightFragments(container: HTMLElement) {
+  highlightFragments(container) {
     const walker = document.createTreeWalker(
       container,
       NodeFilter.SHOW_TEXT,
@@ -100,9 +99,9 @@ export default class SafeLearnPlugin extends Plugin {
       false
     );
 
-    const toHighlight: Text[] = [];
+    const toHighlight = [];
     while (walker.nextNode()) {
-      toHighlight.push(walker.currentNode as Text);
+      toHighlight.push(walker.currentNode);
     }
 
     for (const node of toHighlight) {
@@ -113,7 +112,7 @@ export default class SafeLearnPlugin extends Plugin {
     }
   }
 
-  markPermissionBlocks(container: HTMLElement) {
+  markPermissionBlocks(container) {
     const blocks = container.innerHTML.match(/@@@[^@\n]+[\s\S]*?@@@/g);
     if (!blocks) return;
     for (const block of blocks) {
@@ -128,7 +127,7 @@ export default class SafeLearnPlugin extends Plugin {
     }
   }
 
-  convertSideBySide(container: HTMLElement) {
+  convertSideBySide(container) {
     const pattern = /##side-by-side-start([\s\S]*?)##side-by-side-end/g;
     container.innerHTML = container.innerHTML.replace(pattern, (match, content) => {
       const parts = content.split(/##separator/g);
@@ -137,3 +136,5 @@ export default class SafeLearnPlugin extends Plugin {
     });
   }
 }
+
+module.exports = SafeLearnPlugin;
