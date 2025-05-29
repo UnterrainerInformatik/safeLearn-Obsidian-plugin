@@ -4,7 +4,7 @@
  * Compatible with plain JavaScript use (no bundler required).
  */
 
-module.exports = class SafeLearnPlugin extends Plugin {
+class SafeLearnPlugin extends Plugin {
   async onload() {
     console.log("✅ SafeLearn Plugin loaded");
     this.registerEvent(this.app.workspace.on("layout-change", () => this.processAll()));
@@ -81,3 +81,5 @@ module.exports = class SafeLearnPlugin extends Plugin {
     });
   }
 };
+
+module.exports = SafeLearnPlugin;
