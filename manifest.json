@@ -1,0 +1,12 @@
+{
+  "id": "safelearn-plugin",
+  "name": "SafeLearn Plugin",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "A community plugin for Obsidian that offers visual aids for SafeLearn-specific tags such as ##fragment, permission blocks, and side-by-side layouts for Reveal.js.",
+  "author": "Gerald Unterrainer",
+  "authorUrl": "https://github.com/UnterrainerInformatik",
+  "repo": "https://github.com/UnterrainerInformatik/safeLearn-Obsidian-plugin",
+  "isDesktopOnly": false,
+  "main": "main.js"
+}
