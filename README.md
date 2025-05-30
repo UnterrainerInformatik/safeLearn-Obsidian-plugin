@@ -1,6 +1,11 @@
 # SafeLearn Plugin for Obsidian
 
-A community plugin for Obsidian that provides visual aids for [SafeLearn](https://github.com/UnterrainerInformatik/safeLearn)-specific Markdown tags. It enhances the editing experience by adding visual formatting for Reveal.js fragments, role-based permission blocks, and multi-column side-by-side layouts.
+A community plugin for Obsidian that provides visual aids for [SafeLearn](https://github.com/UnterrainerInformatik/safeLearn)-specific Markdown tags.
+It enhances the editing experience by adding visual formatting for Reveal.js fragments, role-based permission blocks, and multi-column side-by-side layouts.
+
+[SafeLearn](https://github.com/UnterrainerInformatik/safeLearn) is an open-source tool for teachers that want to write their learning-materials using Markdown and want to hide those behind a user-login fed by the schools AD or with their own Keycloak instance.
+[SafeLearn](https://github.com/UnterrainerInformatik/safeLearn) is a Node-server that is securely publishing your learning materials along with some custom tags, rendering to responsive HTML and Reveal.js and some permission-related stuff to distinguish between pupil-view and teacher-view.
+For further details and installation instructions visit the git-repo [here](https://github.com/UnterrainerInformatik/safeLearn).
 
 ---
 
