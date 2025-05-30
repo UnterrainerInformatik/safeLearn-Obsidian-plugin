@@ -6,11 +6,14 @@ var state = require('@codemirror/state');
 
 class SafeLearnPlugin extends obsidian.Plugin {
     async onload() {
-        console.log("✅ SafeLearn Plugin geladen");
+        // console.log("✅ Loaded SafeLearn Plugin.");
         this.registerEditorExtension(safelearnHighlighter);
         this.registerMarkdownPostProcessor((el) => {
             cleanPreview(el);
         });
+    }
+    onunload() {
+        // console.log("❌ Unloaded SafeLearn Plugin.");
     }
 }
 function cleanPreview(el) {
