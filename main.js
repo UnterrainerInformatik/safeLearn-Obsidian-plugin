@@ -1,118 +1,168 @@
-const { Plugin } = require("obsidian");
+'use strict';
 
-module.exports = class SafeLearnPlugin extends Plugin {
-  async onload() {
-    console.log("✅ SafeLearn Plugin loaded");
+var obsidian = require('obsidian');
+var view = require('@codemirror/view');
+var state = require('@codemirror/state');
 
-    this.observeEditors();
-  }
-
-  onunload() {
-    console.log("❎ SafeLearn Plugin unloaded");
-    // nichts weiter nötig – DOM wird neu aufgebaut bei Wechsel
-  }
-
-  observeEditors() {
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type === "childList") {
-          for (const node of mutation.addedNodes) {
-            if (node.nodeType === 1) {
-              this.processNode(node);
-            }
-          }
-        }
-      }
-    });
-
-    this.registerEvent(
-      this.app.workspace.on("layout-change", () => {
-        const editors = document.querySelectorAll(".cm-content");
-        editors.forEach((el) => {
-          this.processNode(el);
-          observer.observe(el, { childList: true, subtree: true });
+class SafeLearnPlugin extends obsidian.Plugin {
+    async onload() {
+        console.log("✅ SafeLearn Plugin geladen");
+        this.registerEditorExtension(safelearnHighlighter);
+        this.registerMarkdownPostProcessor((el) => {
+            cleanPreview(el);
         });
-      })
-    );
-  }
-
-  processNode(container) {
-    if (!(container instanceof HTMLElement)) return;
-
-    this.highlightFragments(container);
-    this.markPermissionBlocks(container);
-    this.convertSideBySide(container);
-  }
-
-  highlightFragments(container) {
-    const walker = document.createTreeWalker(
-      container,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode: (node) => node.nodeValue?.includes("##fragment") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP,
-      },
-      false
-    );
-
-    const nodes = [];
-    while (walker.nextNode()) nodes.push(walker.currentNode);
-
-    for (const node of nodes) {
-      const parent = node.parentNode;
-      if (!parent) continue;
-
-      const parts = node.nodeValue.split("##fragment");
-      parent.removeChild(node);
-
-      for (let i = 0; i < parts.length; i++) {
-        parent.appendChild(document.createTextNode(parts[i]));
-        if (i < parts.length - 1) {
-          const span = document.createElement("span");
-          span.className = "fragment-highlight";
-          span.textContent = "##fragment";
-          parent.appendChild(span);
-        }
-      }
     }
-  }
-
-  markPermissionBlocks(container) {
-    const nodes = container.querySelectorAll("div");
-
-    nodes.forEach((block) => {
-      const text = block.innerText;
-
-      const match = text.match(/^@@@([^\n]+)\n([\s\S]*?)\n@@@$/);
-      if (match) {
-        const role = match[1].trim();
-        const content = match[2].trim();
-
-        const permDiv = document.createElement("div");
-        permDiv.className = "permission-block";
-        permDiv.innerHTML = `<div class="perm-label">@@@ ${role}</div><div>${content}</div><div class="perm-end">@@@</div>`;
-        block.replaceWith(permDiv);
-      }
+}
+function cleanPreview(el) {
+    el.querySelectorAll("*").forEach((node) => {
+        if (!(node instanceof HTMLElement))
+            return;
+        const text = node.textContent?.trim();
+        if (!text)
+            return;
+        if (/^ *@{3} *$/.test(text) ||
+            /^ *@{3} +([^\s,]+([ ,]+[^\s,]+)*)$/.test(text)) {
+            node.classList.add("safelearn-hidden");
+            return;
+        }
+        if (/^##fragment$/.test(text)) {
+            node.classList.add("safelearn-hidden");
+            return;
+        }
+        if (/^##(side-by-side-(start|end)|separator)$/.test(text)) {
+            node.classList.add("safelearn-hidden");
+            return;
+        }
+        node.innerHTML = node.innerHTML
+            .replace(/(##fragment)(?![\w-])/gi, '<span class="safelearn-hidden">$1</span>')
+            .replace(/@@@(?: +[^\s,]+([ ,]+[^\s,]+)*)?/g, '<span class="safelearn-hidden">$&</span>')
+            .replace(/##(side-by-side-(start|end)|separator)/g, '<span class="safelearn-hidden">$&</span>');
     });
-  }
-
-  convertSideBySide(container) {
-    const blocks = container.querySelectorAll("div");
-
-    blocks.forEach((block) => {
-      const text = block.innerText;
-      const match = text.match(/##side-by-side-start([\s\S]*?)##side-by-side-end/);
-      if (match) {
-        const content = match[1];
-        const parts = content.split(/##separator/g);
-        const wrapper = document.createElement("div");
-        wrapper.className = "side-by-side";
-        parts.forEach((part) => {
-          const col = document.createElement("div");
-          col.innerText = part.trim();
-          wrapper.appendChild(col);
+}
+const safelearnHighlighter = view.ViewPlugin.fromClass(class {
+    constructor(view) {
+        this.decorations = this.buildDecorations(view);
+        this.cleanupPreview();
+    }
+    update(update) {
+        if (update.docChanged) {
+            this.decorations = this.buildDecorations(update.view);
+            this.cleanupPreview();
+        }
+    }
+    buildDecorations(view$1) {
+        const doc = view$1.state.doc;
+        const lineCount = doc.lines;
+        const isPreview = view$1.dom.classList.contains("cm-preview");
+        const decorations = [];
+        let permissionBlockStart = -1;
+        let sideBlockStart = -1;
+        for (let i = 1; i <= lineCount; i++) {
+            const line = doc.line(i);
+            const text = line.text.trim();
+            // === ##fragment ===
+            const fragIndex = line.text.indexOf("##fragment");
+            if (fragIndex !== -1) {
+                const from = line.from + fragIndex;
+                const to = from + "##fragment".length;
+                decorations.push({
+                    from,
+                    to,
+                    deco: isPreview
+                        ? view.Decoration.replace({})
+                        : view.Decoration.mark({ class: "fragment-highlight" }),
+                });
+            }
+            // === @@@ Block ===
+            if (permissionBlockStart === -1 && text.startsWith("@@@")) {
+                permissionBlockStart = i;
+                if (isPreview) {
+                    const from = line.from + line.text.indexOf("@@@");
+                    const to = from + "@@@".length;
+                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
+                }
+                continue;
+            }
+            if (permissionBlockStart !== -1 && text === "@@@") {
+                if (isPreview) {
+                    const from = line.from;
+                    const to = from + "@@@".length;
+                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
+                }
+                else {
+                    for (let j = permissionBlockStart; j <= i; j++) {
+                        const l = doc.line(j);
+                        decorations.push({
+                            from: l.from,
+                            to: l.from,
+                            deco: view.Decoration.line({ class: "permission-block" }),
+                        });
+                    }
+                }
+                permissionBlockStart = -1;
+            }
+            // === ##side-by-side blocks ===
+            if (sideBlockStart === -1 && text === "##side-by-side-start") {
+                sideBlockStart = i;
+                if (isPreview) {
+                    const from = line.from;
+                    const to = from + text.length;
+                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
+                }
+                continue;
+            }
+            if (sideBlockStart !== -1 && text === "##side-by-side-end") {
+                if (isPreview) {
+                    const from = line.from;
+                    const to = from + text.length;
+                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
+                }
+                else {
+                    for (let j = sideBlockStart; j <= i; j++) {
+                        const l = doc.line(j);
+                        const cl = j === sideBlockStart ? "side-by-side-start" : j == i ? "side-by-side-end" : "side-by-side-block";
+                        decorations.push({
+                            from: l.from,
+                            to: l.from,
+                            deco: view.Decoration.line({ class: cl }),
+                        });
+                    }
+                }
+                sideBlockStart = -1;
+                continue;
+            }
+            // === ##separator within Side-by-Side ===
+            if (sideBlockStart !== -1 && text === "##separator") {
+                if (isPreview) {
+                    const from = line.from;
+                    const to = from + text.length;
+                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
+                }
+                else {
+                    decorations.push({
+                        from: line.from,
+                        to: line.from,
+                        deco: view.Decoration.line({ class: "side-by-side-separator" }),
+                    });
+                }
+            }
+        }
+        decorations.sort((a, b) => a.from - b.from);
+        const builder = new state.RangeSetBuilder();
+        for (const { from, to, deco } of decorations) {
+            builder.add(from, to, deco);
+        }
+        return builder.finish();
+    }
+    cleanupPreview() {
+        requestAnimationFrame(() => {
+            document.querySelectorAll(".markdown-preview-view").forEach((el) => {
+                cleanPreview(el);
+            });
         });
-        block.replaceWith(wrapper);
-      }
-    });
-  }
-};
+    }
+}, {
+    decorations: v => v.decorations
+});
+
+module.exports = SafeLearnPlugin;

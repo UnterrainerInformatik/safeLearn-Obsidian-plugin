@@ -1,0 +1,24 @@
+{
+  "name": "safelearn-plugin",
+  "version": "1.0.0",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "rollup -c"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "obsidian": "github:obsidianmd/obsidian-api",
+    "rollup": "^4.41.1",
+    "rollup-plugin-typescript2": "^0.36.0",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "crelt": "^1.0.6"
+  }
+}
