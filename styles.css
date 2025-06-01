@@ -14,6 +14,14 @@
   opacity: 0.3;
 }
 
+.cm-line.permission-global-directive {
+  background-color: var(--permission-global-bg);
+  border-left: 4px solid var(--permission-global-border);
+  padding: 4px 8px;
+  margin: 8px 0;
+  font-style: italic;
+}
+
 .permission-block {
   background-color: var(--permission-bg);
   border-left: 4px solid var(--permission-border);
@@ -65,6 +73,8 @@
   --fragment-fg: #51320c;
   --fragment-border: #f59c2e8e;
 
+  --permission-global-bg: #ede2e241;
+  --permission-global-border: #db9a8f;
   --permission-bg: #ede2e218;
   --permission-border: #db9a8fdc;
   --permission-label-bg: #f9e2e2;
@@ -82,6 +92,8 @@
   --fragment-fg: #6a5c4b;
   --fragment-border: #f59c2e63;
 
+  --permission-global-bg: #290a0535;
+  --permission-global-border: #471108;
   --permission-bg: #290a0510;
   --permission-border: #290a05;
   --permission-label-bg: #573934;

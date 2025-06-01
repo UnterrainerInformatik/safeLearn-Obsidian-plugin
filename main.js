@@ -20,15 +20,13 @@ function cleanPreview(el) {
         const text = node.textContent?.trim();
         if (!text)
             return;
-        // Check for @@@ blocks, ##fragment, and ##side-by-side blocks
         if (/^ *@{3} *$/.test(text) ||
-            /^ *@{3} +([^\s,]+([ ,]+[^\s,]+)*)$/.test(text) ||
+            /^ *@{3} +([^\n\s,]+([ ,]+[^\n\s,]+)*)$/.test(text) ||
             /^##fragment$/.test(text) ||
             /^##(side-by-side-(start|end)|separator)$/.test(text)) {
             node.addClass("safelearn-hidden");
             return;
         }
-        // Remove @@@ blocks, ##fragment, and ##side-by-side blocks from text nodes
         node.childNodes.forEach(child => {
             if (child.nodeType === Node.TEXT_NODE) {
                 let changed = false;
@@ -53,137 +51,120 @@ function cleanPreview(el) {
         });
     });
 }
-const safelearnHighlighter = view.ViewPlugin.fromClass(class {
-    constructor(view) {
-        this.decorations = this.buildDecorations(view);
-        this.cleanupPreview();
-    }
-    update(update) {
-        if (update.docChanged) {
-            this.decorations = this.buildDecorations(update.view);
-            this.cleanupPreview();
-        }
-    }
-    buildDecorations(view$1) {
-        const doc = view$1.state.doc;
-        const lineCount = doc.lines;
-        const isPreview = view$1.dom.classList.contains("cm-preview");
-        const decorations = [];
-        let permissionBlockStart = -1;
-        let sideBlockStart = -1;
-        for (let i = 1; i <= lineCount; i++) {
-            const line = doc.line(i);
-            const text = line.text.trim();
-            // === ##fragment ===
-            let fragIndex = line.text.indexOf("##fragment ");
-            if (fragIndex === -1) {
-                fragIndex = line.text.indexOf("##fragment");
-                // only if the line ends with this "##fragment" without any trailing text
-                if (fragIndex !== -1 && line.text.slice(fragIndex + "##fragment".length).trim() !== "") {
-                    fragIndex = -1;
-                }
+const safelearnHighlighter = view.ViewPlugin.define((view) => {
+    let decorations = buildDecorations(view);
+    const observer = new MutationObserver(() => {
+        decorations = buildDecorations(view);
+        view.dispatch({ effects: [] });
+    });
+    observer.observe(view.dom, { attributes: true, attributeFilter: ["class"] });
+    return {
+        update(update) {
+            if (update.docChanged ||
+                update.viewportChanged ||
+                update.startState !== update.state) {
+                decorations = buildDecorations(update.view);
             }
-            if (fragIndex !== -1) {
-                const from = line.from + fragIndex;
-                const to = from + "##fragment ".length;
-                decorations.push({
-                    from,
-                    to,
-                    deco: isPreview
-                        ? view.Decoration.replace({})
-                        : view.Decoration.mark({ class: "fragment-highlight" }),
-                });
-            }
-            // === @@@ Block ===
-            if (permissionBlockStart === -1 && text.startsWith("@@@")) {
-                permissionBlockStart = i;
-                if (isPreview) {
-                    const from = line.from + line.text.indexOf("@@@");
-                    const to = from + "@@@".length;
-                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
-                }
-                continue;
-            }
-            if (permissionBlockStart !== -1 && text === "@@@") {
-                if (isPreview) {
-                    const from = line.from;
-                    const to = from + "@@@".length;
-                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
-                }
-                else {
-                    for (let j = permissionBlockStart; j <= i; j++) {
-                        const l = doc.line(j);
-                        decorations.push({
-                            from: l.from,
-                            to: l.from,
-                            deco: view.Decoration.line({ class: "permission-block" }),
-                        });
-                    }
-                }
-                permissionBlockStart = -1;
-            }
-            // === ##side-by-side blocks ===
-            if (sideBlockStart === -1 && text === "##side-by-side-start") {
-                sideBlockStart = i;
-                if (isPreview) {
-                    const from = line.from;
-                    const to = from + text.length;
-                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
-                }
-                continue;
-            }
-            if (sideBlockStart !== -1 && text === "##side-by-side-end") {
-                if (isPreview) {
-                    const from = line.from;
-                    const to = from + text.length;
-                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
-                }
-                else {
-                    for (let j = sideBlockStart; j <= i; j++) {
-                        const l = doc.line(j);
-                        const cl = j === sideBlockStart ? "side-by-side-start" : j == i ? "side-by-side-end" : "side-by-side-block";
-                        decorations.push({
-                            from: l.from,
-                            to: l.from,
-                            deco: view.Decoration.line({ class: cl }),
-                        });
-                    }
-                }
-                sideBlockStart = -1;
-                continue;
-            }
-            // === ##separator within Side-by-Side ===
-            if (sideBlockStart !== -1 && text === "##separator") {
-                if (isPreview) {
-                    const from = line.from;
-                    const to = from + text.length;
-                    decorations.push({ from, to, deco: view.Decoration.replace({}) });
-                }
-                else {
-                    decorations.push({
-                        from: line.from,
-                        to: line.from,
-                        deco: view.Decoration.line({ class: "side-by-side-separator" }),
-                    });
-                }
-            }
-        }
-        decorations.sort((a, b) => a.from - b.from);
-        const builder = new state.RangeSetBuilder();
-        for (const { from, to, deco } of decorations) {
-            builder.add(from, to, deco);
-        }
-        return builder.finish();
-    }
-    cleanupPreview() {
-        requestAnimationFrame(() => {
-            document.querySelectorAll(".markdown-preview-view").forEach((el) => {
-                cleanPreview(el);
-            });
-        });
-    }
+        },
+        destroy() {
+            observer.disconnect();
+        },
+        decorations
+    };
 }, {
     decorations: v => v.decorations
 });
+function buildDecorations(view$1) {
+    if (view$1.dom.classList.contains("cm-preview")) {
+        return view.Decoration.none;
+    }
+    const doc = view$1.state.doc;
+    const lineCount = doc.lines;
+    const decorations = [];
+    let permissionBlockStart = -1;
+    let sideBlockStart = -1;
+    for (let i = 1; i <= lineCount; i++) {
+        const line = doc.line(i);
+        const text = line.text.trim();
+        // === Global @@@ Directive in first line ===
+        if (i === 1 && /^ *@{3} +[^\s,]+([ ,]+[^\s,]+)* *$/.test(text)) {
+            const matchIndex = line.text.indexOf("@@@");
+            const from = line.from + matchIndex;
+            const to = line.to;
+            decorations.push({
+                from,
+                to,
+                deco: view.Decoration.mark({ class: "permission-global-directive" }),
+            });
+            continue;
+        }
+        // === ##fragment ===
+        let fragIndex = line.text.indexOf("##fragment ");
+        if (fragIndex === -1) {
+            fragIndex = line.text.indexOf("##fragment");
+            // only if the line ends with this "##fragment" without any trailing text
+            if (fragIndex !== -1 && line.text.slice(fragIndex + "##fragment".length).trim() !== "") {
+                fragIndex = -1;
+            }
+        }
+        if (fragIndex !== -1) {
+            const from = line.from + fragIndex;
+            const to = from + "##fragment ".length;
+            decorations.push({
+                from,
+                to,
+                deco: view.Decoration.mark({ class: "fragment-highlight" }),
+            });
+        }
+        // === @@@ Block ===
+        if (permissionBlockStart === -1 && text.startsWith("@@@")) {
+            permissionBlockStart = i;
+            continue;
+        }
+        if (permissionBlockStart !== -1 && text === "@@@") {
+            for (let j = permissionBlockStart; j <= i; j++) {
+                const l = doc.line(j);
+                decorations.push({
+                    from: l.from,
+                    to: l.from,
+                    deco: view.Decoration.mark({ class: "permission-block" }),
+                });
+            }
+            permissionBlockStart = -1;
+        }
+        // === ##side-by-side blocks ===
+        if (sideBlockStart === -1 && text === "##side-by-side-start") {
+            sideBlockStart = i;
+            continue;
+        }
+        if (sideBlockStart !== -1 && text === "##side-by-side-end") {
+            for (let j = sideBlockStart; j <= i; j++) {
+                const l = doc.line(j);
+                const cl = j === sideBlockStart ? "side-by-side-start" : j == i ? "side-by-side-end" : "side-by-side-block";
+                decorations.push({
+                    from: l.from,
+                    to: l.from,
+                    deco: view.Decoration.mark({ class: cl }),
+                });
+            }
+            sideBlockStart = -1;
+            continue;
+        }
+        // === ##separator within Side-by-Side ===
+        if (sideBlockStart !== -1 && text === "##separator") {
+            decorations.push({
+                from: line.from,
+                to: line.from,
+                deco: view.Decoration.mark({ class: "side-by-side-separator" }),
+            });
+        }
+    }
+    decorations.sort((a, b) => a.from - b.from);
+    const builder = new state.RangeSetBuilder();
+    for (const { from, to, deco } of decorations) {
+        builder.add(from, to, deco);
+    }
+    return builder.finish();
+}
 
 module.exports = SafeLearnPlugin;
