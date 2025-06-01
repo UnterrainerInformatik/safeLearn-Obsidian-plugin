@@ -16,35 +16,49 @@ export default class SafeLearnPlugin extends Plugin {
 function cleanPreview(el: HTMLElement) {
   el.querySelectorAll("*").forEach((node) => {
     if (!(node instanceof HTMLElement)) return;
+
     const text = node.textContent?.trim();
     if (!text) return;
 
+    // Check for @@@ blocks, ##fragment, and ##side-by-side blocks
     if (
       /^ *@{3} *$/.test(text) ||
-      /^ *@{3} +([^\s,]+([ ,]+[^\s,]+)*)$/.test(text)
+      /^ *@{3} +([^\s,]+([ ,]+[^\s,]+)*)$/.test(text) ||
+      /^##fragment$/.test(text) ||
+      /^##(side-by-side-(start|end)|separator)$/.test(text)
     ) {
-      node.classList.add("safelearn-hidden");
+      node.addClass("safelearn-hidden");
       return;
     }
 
-    if (/^##fragment$/.test(text)) {
-      node.classList.add("safelearn-hidden");
-      return;
-    }
+    // Remove @@@ blocks, ##fragment, and ##side-by-side blocks from text nodes
+    node.childNodes.forEach(child => {
+      if (child.nodeType === Node.TEXT_NODE) {
+        let changed = false;
+        let newText = child.textContent ?? "";
 
-    if (/^##(side-by-side-(start|end)|separator)$/.test(text)) {
-      node.classList.add("safelearn-hidden");
-      return;
-    }
+        const replacePatterns: RegExp[] = [
+          /@@@(?: +[^\s,]+([ ,]+[^\s,]+)*)?/g,
+          /##fragment(?![\w-])/gi,
+          /##(side-by-side-(start|end)|separator)/gi
+        ];
 
-    node.innerHTML = node.innerHTML
-    .replace(/(##fragment)(?![\w-])/gi, '<span class="safelearn-hidden">$1</span>')
-    .replace(/@@@(?: +[^\s,]+([ ,]+[^\s,]+)*)?/g, '<span class="safelearn-hidden">$&</span>')
-    .replace(/##(side-by-side-(start|end)|separator)/g, '<span class="safelearn-hidden">$&</span>');
+        for (const pattern of replacePatterns) {
+          if (pattern.test(newText)) {
+            newText = newText.replace(pattern, "");
+            changed = true;
+          }
+        }
+
+        if (changed) {
+          const span = document.createElement("span");
+          span.textContent = newText;
+          child.replaceWith(span);
+        }
+      }
+    });
   });
 }
-
-
 
 const safelearnHighlighter = ViewPlugin.fromClass(class {
   decorations;
@@ -76,10 +90,17 @@ const safelearnHighlighter = ViewPlugin.fromClass(class {
     const text = line.text.trim();
 
     // === ##fragment ===
-    const fragIndex = line.text.indexOf("##fragment");
+    let fragIndex = line.text.indexOf("##fragment ");
+    if (fragIndex === -1) {
+      fragIndex = line.text.indexOf("##fragment");
+      // only if the line ends with this "##fragment" without any trailing text
+      if (fragIndex !== -1 && line.text.slice(fragIndex + "##fragment".length).trim() !== "") {
+        fragIndex = -1;
+      }
+    }
     if (fragIndex !== -1) {
       const from = line.from + fragIndex;
-      const to = from + "##fragment".length;
+      const to = from + "##fragment ".length;
       decorations.push({
         from,
         to,
