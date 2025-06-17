@@ -6,7 +6,5 @@
   "description": "Offers visual aids for tags specific for SafeLearn (an open-source project) such as ##fragment, permission blocks, and side-by-side layouts for Reveal.js.",
   "author": "UnterrainerInformatik",
   "authorUrl": "https://github.com/UnterrainerInformatik",
-  "repo": "UnterrainerInformatik/safeLearn-Obsidian-plugin",
-  "isDesktopOnly": false,
-  "main": "main.js"
+  "isDesktopOnly": false
 }
