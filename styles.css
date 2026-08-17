@@ -1,17 +1,26 @@
-.fragment-highlight {
-  background-color: var(--fragment-bg);
-  color: var(--fragment-fg);
-  border: 2px solid var(--fragment-border);
-  border-radius: 6px;
-  padding: 0px 2px;
-  margin: 1px;
-  display: inline-block;
-  font-weight: 500;
-  font-size: 0.8em;
+/*
+ * A fragment marker, in the two states the editor shows it in.
+ *
+ * At rest the tag's characters are gone and the icon `FragmentIconWidget` built
+ * stands in their place. Nothing draws a frame or a tint around it: a fragment
+ * says one small thing about a line of otherwise ordinary prose, and framed it
+ * was the loudest thing on that line.
+ *
+ * With the cursor in it the characters are back, and colour is all they carry -
+ * enough to show that the plugin reads them as a tag, and no more room than the
+ * text around them takes. Which is also why there is no `::before` here any
+ * more: the icon is what stands in the tag's place, not something drawn beside
+ * it, and the note above `.safelearn-entry` says what a `::before` on a marked
+ * range costs when the editor cuts that range in two.
+ */
+.fragment-icon {
+  font-size: 0.85em;
+  opacity: 0.6;
 }
-.fragment-highlight::before {
-  content: "🔀 ";
-  opacity: 0.3;
+
+.fragment-highlight {
+  color: var(--fragment-fg);
+  font-weight: 500;
 }
 
 /*
@@ -24,8 +33,17 @@
   background-color: var(--permission-bg);
   border-left: 1px solid var(--permission-border);
   border-right: 1px solid var(--permission-border);
-  padding: 0 8px;
   margin: 0;
+}
+
+/*
+ * The room between the frame and the text, on the line elements alone. On an
+ * element the editor renders in place of lines it would replace that element's
+ * own horizontal padding, move its content, and take the frame drawn against
+ * that content along with it - see the rule below.
+ */
+.permission-block.cm-line {
+  padding: 0 8px;
 }
 
 .permission-block-start {
@@ -100,10 +118,10 @@
  * to be written into the heading to say it.
  */
 .permission-file {
-  background-color: var(--permission-file-bg);
-  border-top: 2px solid var(--permission-file-border);
-  border-left: 2px solid var(--permission-file-border);
-  border-right: 2px solid var(--permission-file-border);
+  background-color: var(--permission-bg);
+  border-top: 2px solid var(--permission-border);
+  border-left: 2px solid var(--permission-border);
+  border-right: 2px solid var(--permission-border);
   border-top-left-radius: 4px;
   border-top-right-radius: 4px;
   padding: 4px 8px 2px;
@@ -120,7 +138,6 @@
   background-color: var(--side-block-bg);
   border-left: 2px solid var(--side-block-border);
   border-right: 2px solid var(--side-block-border);
-  padding: 6px;
   margin: 4px 0;
 }
 
@@ -130,7 +147,6 @@
   border-top: 2px solid var(--side-block-border);
   border-left: 2px solid var(--side-block-border);
   border-right: 2px solid var(--side-block-border);
-  padding: 4px;
   margin: 4px 0;
 }
 
@@ -140,14 +156,82 @@
   border-bottom: 2px solid var(--side-block-border);
   border-left: 2px solid var(--side-block-border);
   border-right: 2px solid var(--side-block-border);
-  padding: 4px;
   margin: 4px 0;
+}
+
+.side-by-side-block.cm-line {
+  padding: 6px;
+}
+
+.side-by-side-start.cm-line,
+.side-by-side-end.cm-line {
+  padding: 4px;
 }
 
 .side-by-side-separator {
   border-top: 2px dashed var(--side-separator-color);
   color: var(--side-separator-fg);
   margin: 6px 0;
+}
+
+/*
+ * ################### The frame, on what is not a line ###################
+ *
+ * Live Preview renders a table, a callout, a diagram, a formula and an embedded
+ * note as elements of its own, siblings of the line elements rather than lines.
+ * The plugin puts the block's classes on them (see `frameBlocks`), and the rules
+ * above cannot draw the frame there unchanged, for one measured reason: those
+ * elements are not laid out to the width of a line. A table widget carries
+ * `margin-inline: -16px; padding-inline: 16px`, so its box runs 16px wider on
+ * each side than the line above it while its *content* stands exactly where that
+ * line does. A border on its box would step out of the block at every table, and
+ * so would an inset shadow - an inset shadow is clipped to the padding box,
+ * which on an element that draws no border is its box.
+ *
+ * What stands in one vertical line with the edges above is the element's content
+ * box, so the tint and the two edges are background layers positioned against
+ * it. Nothing here is written in terms of 16px: whatever horizontal room the
+ * element keeps for itself is where the frame is drawn.
+ *
+ * `repeat-y` is what carries those layers across the element's own vertical
+ * padding - the table widget has 16px of it. A layer the size of the content box
+ * would stop short of the line below and leave the run of tint broken, which is
+ * the defect this change exists to remove.
+ *
+ * The lid and the floor are left as they are. They are horizontal, and in the
+ * documents this can arise in a block's first and last line are its markers,
+ * which the editor always renders as lines.
+ */
+.permission-block:not(.cm-line) {
+  --safelearn-frame-edge: 1px;
+  --safelearn-frame-border: var(--permission-border);
+  --safelearn-frame-bg: var(--permission-bg);
+}
+
+.side-by-side-block:not(.cm-line),
+.side-by-side-start:not(.cm-line),
+.side-by-side-end:not(.cm-line) {
+  --safelearn-frame-edge: 2px;
+  --safelearn-frame-border: var(--side-block-border);
+  --safelearn-frame-bg: var(--side-block-bg);
+}
+
+.permission-block:not(.cm-line),
+.side-by-side-block:not(.cm-line),
+.side-by-side-start:not(.cm-line),
+.side-by-side-end:not(.cm-line) {
+  border-left: none;
+  border-right: none;
+  background-color: transparent;
+  background-image:
+    linear-gradient(var(--safelearn-frame-border), var(--safelearn-frame-border)),
+    linear-gradient(var(--safelearn-frame-border), var(--safelearn-frame-border)),
+    linear-gradient(var(--safelearn-frame-bg), var(--safelearn-frame-bg));
+  background-size: var(--safelearn-frame-edge) 100%, var(--safelearn-frame-edge) 100%, 100% 100%;
+  background-position: left top, right top, left top;
+  background-origin: content-box;
+  background-clip: padding-box;
+  background-repeat: repeat-y;
 }
 
 .safelearn-hidden {
@@ -322,10 +406,10 @@
 
 /* The same open-bottomed box the editor draws for the line that gates the file. */
 .safelearn-read-file {
-  background-color: var(--permission-file-bg);
-  border-top: 2px solid var(--permission-file-border);
-  border-left: 2px solid var(--permission-file-border);
-  border-right: 2px solid var(--permission-file-border);
+  background-color: var(--permission-bg);
+  border-top: 2px solid var(--permission-border);
+  border-left: 2px solid var(--permission-border);
+  border-right: 2px solid var(--permission-border);
   border-top-left-radius: 4px;
   border-top-right-radius: 4px;
   padding: 6px 8px 4px;
@@ -356,20 +440,32 @@
   margin-bottom: 0;
 }
 
-/* Light Theme */
+/*
+ * Light Theme
+ *
+ * A directive gating the whole file and a directive gating one block are drawn
+ * in one colour, and that colour is yellow. They are the same promise about two
+ * different amounts of text, and what tells them apart is the shape of the box -
+ * two edges against one, and a floor the file-level form has nowhere to draw.
+ * Two colours said the same thing a second time, in a channel that then had
+ * nothing left to say.
+ *
+ * Yellow rather than the amber the file-level form used to be drawn in: at that
+ * hue a full-width frame reads as orange, and orange is the warning colour of a
+ * palette whose actual warnings are red. The block's own tint was already this
+ * yellow; what changed is that the edges are now drawn in it too.
+ */
 .theme-light {
-  --fragment-bg: #f59c2e25;
-  --fragment-fg: #51320c;
-  --fragment-border: #f59c2e8e;
+  /* On the characters alone now, with nothing behind them - so far enough from
+     the body text to read as a marking, and dark enough to read as text. */
+  --fragment-fg: #a1620f;
 
-  --permission-bg: #f5c84212;
-  --permission-border: #c8961e77;
+  --permission-bg: #f5c84216;
+  --permission-border: #d6a70f8c;
   --permission-label-bg: #f9e2e2;
   --permission-label-fg: #225577;
   --permission-withheld-bg: #b0000012;
   --permission-withheld-border: #b00000aa;
-  --permission-file-bg: #e0900016;
-  --permission-file-border: #e09000cc;
 
   --entry-bg: #8899aa18;
   --entry-border: #8899aacc;
@@ -386,20 +482,16 @@
   --side-separator-color: #888;
 }
 
-/* Dark Theme */
+/* Dark Theme - one colour for both forms of directive, for the reason above. */
 .theme-dark {
-  --fragment-bg: #f59c2e13;
-  --fragment-fg: #6a5c4b;
-  --fragment-border: #f59c2e63;
+  --fragment-fg: #d9a45e;
 
-  --permission-bg: #e0b0400e;
-  --permission-border: #e0b04055;
+  --permission-bg: #e8c34110;
+  --permission-border: #e8c34170;
   --permission-label-bg: #573934;
   --permission-label-fg: #b2dfdb;
   --permission-withheld-bg: #ff525214;
   --permission-withheld-border: #ff5252aa;
-  --permission-file-bg: #f0a03014;
-  --permission-file-border: #f0a030bb;
 
   --entry-bg: #8899aa14;
   --entry-border: #8899aa99;

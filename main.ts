@@ -918,12 +918,67 @@ class DirectiveHeadingWidget extends WidgetType {
   }
 }
 
-function buildDecorations(view: EditorView): DecorationSet {
-  const doc = view.state.doc;
+/** What a fragment marker is shown as. Written here rather than in `styles.css`: see below. */
+const FRAGMENT_ICON = "🔀";
 
+/**
+ * The icon that stands in the editor where a fragment marker's characters are.
+ *
+ * A fragment says one small thing - that what follows it waits for a click - and
+ * it says it about a line that is otherwise ordinary prose. Spelled out and
+ * framed, the tag was the loudest thing on that line; as an icon it says the same
+ * thing in the room a punctuation mark takes. What it replaces comes back the
+ * moment the cursor touches it, exactly as a directive line's characters do, so
+ * the tag is still there to be edited by the person who wrote it.
+ *
+ * The icon is a character in the element rather than `content` in the stylesheet,
+ * which is where this plugin's other icons are. Those decorate text that is on
+ * screen either way; this one *is* what is on screen in the tag's place, and a
+ * stylesheet that failed to load would otherwise take the tag off the page
+ * without leaving anything behind.
+ *
+ * Every fragment is shown the same way, so they all compare equal and the editor
+ * keeps the elements it already built across a rebuild - and a rebuild now
+ * happens on every cursor move.
+ */
+class FragmentIconWidget extends WidgetType {
+  eq(): boolean {
+    return true;
+  }
+
+  toDOM(): HTMLElement {
+    const icon = document.createElement("span");
+    icon.className = "fragment-icon";
+    icon.textContent = FRAGMENT_ICON;
+    return icon;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+/**
+ * What the document says about each of its lines, read once.
+ *
+ * There are two consumers of it and they must not answer differently: the
+ * decoration set below, which reaches the elements the editor renders as lines,
+ * and `frameBlocks`, which reaches the ones it does not. Both read `lineClasses`
+ * rather than walking the document again - a second walk would be a second
+ * opinion about where a block ends.
+ */
+type DocumentMarking = {
+  /** Per line number, the classes the blocks covering it put on it. */
+  lineClasses: Map<number, string[]>;
+  /** Per line number, the entries of the directive standing on it. */
+  directives: Map<number, DirectiveEntry[]>;
+  fileDirective: number | null;
+};
+
+function markLines(doc: Text): DocumentMarking {
   // What each line carries by virtue of the blocks covering it, for the whole
-  // document. Turned into decorations further down, and only where they can
-  // actually be seen.
+  // document. It becomes decorations where the editor renders a line as a line,
+  // and a class written onto the element where it renders one as something else.
   const lineClasses = new Map<number, string[]>();
   const carries = (line: number, className: string) => {
     const classes = lineClasses.get(line);
@@ -960,9 +1015,9 @@ function buildDecorations(view: EditorView): DecorationSet {
     for (let i = block.from; i <= block.to; i++) {
       if (block.kind === "permission") {
         // Every line of the block, and its two ends besides. A box is drawn one
-        // line element at a time, so which side of it a line is on is something
-        // the marking has to say - the side-by-side block is drawn the same way
-        // for the same reason. It is no new conclusion about the document: the
+        // element at a time, so which side of it a line is on is something the
+        // marking has to say - the side-by-side block is drawn the same way for
+        // the same reason. It is no new conclusion about the document: the
         // block's first and last line are what `resolveBlocks` already found.
         carries(i, "permission-block");
         if (i === block.from) carries(i, "permission-block-start");
@@ -976,6 +1031,13 @@ function buildDecorations(view: EditorView): DecorationSet {
     }
     for (const line of block.separators) carries(line, "side-by-side-separator");
   }
+
+  return { lineClasses, directives, fileDirective };
+}
+
+function buildDecorations(view: EditorView, marking: DocumentMarking): DecorationSet {
+  const doc = view.state.doc;
+  const { lineClasses, directives, fileDirective } = marking;
 
   // Only the lines on screen produce decorations. A rebuild now happens on every
   // cursor move as well as on every keystroke, and there is nothing to gain from
@@ -1013,9 +1075,18 @@ function buildDecorations(view: EditorView): DecorationSet {
       continue;
     }
 
+    // The same rule the directive line above follows, applied to a tag rather
+    // than to a whole line: the icon stands for the tag while nothing is in it,
+    // and the tag's own characters stand there while something is. The extent
+    // asked about is the tag's, not the line's - two fragments in one line are
+    // two independent answers, and a person editing one keeps the other quiet.
     for (const { index, length } of fragmentsIn(line.text)) {
+      const from = line.from + index;
+      const to = from + length;
       ranges.push(
-        Decoration.mark({ class: "fragment-highlight" }).range(line.from + index, line.from + index + length)
+        isTouched(from, to)
+          ? Decoration.mark({ class: "fragment-highlight" }).range(from, to)
+          : Decoration.replace({ widget: new FragmentIconWidget() }).range(from, to)
       );
     }
     for (const entry of directives.get(number) ?? []) {
@@ -1036,12 +1107,100 @@ function buildDecorations(view: EditorView): DecorationSet {
   return Decoration.set(ranges, true);
 }
 
+/**
+ * Every class a block puts on a line, and therefore every class the pass below
+ * is allowed to take off an element again.
+ *
+ * It is only needed for removal: what is added comes straight out of
+ * `lineClasses`, so a class this list forgot is still applied. What a forgotten
+ * class would cost is the other half - a frame left standing on an element after
+ * the block stopped covering it.
+ */
+const BLOCK_CLASSES = Object.freeze([
+  "permission-file",
+  "permission-withheld",
+  "permission-block",
+  "permission-block-start",
+  "permission-block-end",
+  "side-by-side-start",
+  "side-by-side-block",
+  "side-by-side-end",
+  "side-by-side-separator",
+]);
+
+/**
+ * Puts the block's classes on the elements the editor renders in place of lines.
+ *
+ * A block's frame is a `Decoration.line`, and Live Preview does not render every
+ * line as a line: a table, a callout, a diagram, a formula and an embedded note
+ * each arrive as a `div` that is a sibling of the `cm-line` elements rather than
+ * one of them. A line decoration has nothing to attach to there, so the frame
+ * stopped above such an element and started again below it - the block read as
+ * two boxes that do not close. `posAtDOM` maps the element back to the line it
+ * was built from, and that line has already been classified.
+ *
+ * Two children are passed over, for two different reasons. A `cm-line` is
+ * already carrying its classes from the decoration set, and writing them again
+ * would be a second opinion about the same element. A `cm-gap` stands for the
+ * whole stretch of document the editor has scrolled away and built nothing for -
+ * one element covering many lines - so framing it by the single line it resolves
+ * to would paint a block's frame across an arbitrary part of the document.
+ *
+ * Classes are removed as well as added. That is what keeps a frame from standing
+ * on an element after the block's closing marker moved above it.
+ */
+function frameBlocks(view: EditorView, lineClasses: Map<number, string[]>): void {
+  for (const element of Array.from(view.contentDOM.children)) {
+    if (element.classList.contains("cm-line") || element.classList.contains("cm-gap")) continue;
+
+    let carried: string[];
+    try {
+      carried = lineClasses.get(view.state.doc.lineAt(view.posAtDOM(element)).number) ?? [];
+    } catch {
+      // An element the editor does not own has no line to answer for. Skipping
+      // it is the whole handling: an update must not fail over a stray child.
+      continue;
+    }
+
+    // `classList` writes nothing when the token is already in the state asked
+    // for, so running this twice over an unchanged document touches no
+    // attribute - which is what lets the observer below call it as often as it
+    // likes. And a class written on a child is not a change to the child *list*,
+    // so these writes cannot be what wakes that observer up.
+    for (const className of carried) element.classList.add(className);
+    for (const className of BLOCK_CLASSES) {
+      if (!carried.includes(className)) element.classList.remove(className);
+    }
+  }
+}
+
 const safelearnHighlighter = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
 
+    /** What each line carries, kept so the pass over the DOM reads the same answer. */
+    lineClasses: Map<number, string[]>;
+
+    /**
+     * Watches for the elements Obsidian fills in after the update that produced
+     * their range - a diagram and an embedded note are both built asynchronously
+     * and replace the child that stood there. The pass after an update cannot
+     * see those, because at that moment they do not exist yet.
+     *
+     * The child list of `.cm-content` and not its subtree: what arrives late is
+     * a *replaced child*, and a subtree observer would fire on every keystroke
+     * inside every line for nothing.
+     */
+    observer: MutationObserver;
+
     constructor(view: EditorView) {
-      this.decorations = buildDecorations(view);
+      const marking = markLines(view.state.doc);
+      this.lineClasses = marking.lineClasses;
+      this.decorations = buildDecorations(view, marking);
+
+      this.observer = new MutationObserver(() => this.frame(view));
+      this.observer.observe(view.contentDOM, { childList: true });
+      this.frame(view);
     }
 
     update(update: ViewUpdate) {
@@ -1051,8 +1210,28 @@ const safelearnHighlighter = ViewPlugin.fromClass(
       // its own characters when the cursor enters it, which is a change in what
       // is on screen with no change to the document at all.
       if (update.docChanged || update.viewportChanged || update.selectionSet) {
-        this.decorations = buildDecorations(update.view);
+        const marking = markLines(update.state.doc);
+        this.lineClasses = marking.lineClasses;
+        this.decorations = buildDecorations(update.view, marking);
       }
+      this.frame(update.view);
+    }
+
+    destroy() {
+      this.observer.disconnect();
+    }
+
+    /**
+     * Runs the pass in the write phase of a measure cycle, so that nothing is
+     * written to the DOM in the middle of an update the editor is still doing.
+     * The key is what collapses several requests in one cycle into one pass.
+     */
+    frame(view: EditorView) {
+      view.requestMeasure({
+        key: this,
+        read: () => null,
+        write: () => frameBlocks(view, this.lineClasses),
+      });
     }
   },
   {

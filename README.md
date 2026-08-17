@@ -32,6 +32,8 @@ This will appear as a fragment.
 
 **What counts as a fragment marker changed, and with it what gets highlighted.** The rule is now the rendering server's own — `##fragment` followed by whitespace or the end of the line, matched case-sensitively, every occurrence in a line rather than the first. It no longer has to stand alone on its line, so `- ##fragment two` is highlighted where it was not before; and `##FRAGMENT` and `##fragment.` are no longer highlighted, because the server does not act on them either. If you had learned the old behavior, this is the change you will notice: the highlight now marks what the server will act on, and nothing else. The highlight also covers the tag alone — the space after it is no longer part of it.
 
+**And a fragment is now shown as an icon rather than as its own characters.** `🔀` stands where the tag is, with no frame and no tint around it: a fragment says one small thing about a line of otherwise ordinary prose, and ten characters in a box dominated the sentence they stood in. This works exactly like a directive line — put the cursor in the icon, or run a selection across it, and `##fragment` is back and editable. Nothing is written into your file either way.
+
 ### 🔹 Permission Blocks (`@@@ role`)
 Visually wraps blocks meant for specific roles (like teacher, 4bhif, etc.) to make them clearly distinguishable while editing.
 **Example:**
@@ -83,7 +85,7 @@ Right side content.
 
 In the editor the block is drawn as the region it is. In the reading view it is rebuilt as columns, split where you split it — letting the markers vanish and the content run on underneath would leave the reading view saying nothing about the page the server produces, which is what it is for. The column widths are not Reveal's and are not meant to be.
 
-`##fragment` is a different case: it selects when content appears in a presentation and says nothing about the document as a document, so the reading view drops it without leaving anything in its place. That a fragment stands there is shown in the editor.
+`##fragment` is a different case: it selects when content appears in a presentation and says nothing about the document as a document, so the reading view drops it without leaving anything in its place. That a fragment stands there is shown in the editor, as the icon described above.
 
 ## ⌨️ Writing the tags instead of typing them
 
