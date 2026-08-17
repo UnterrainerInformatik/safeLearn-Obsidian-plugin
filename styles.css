@@ -14,11 +14,101 @@
   opacity: 0.3;
 }
 
+/*
+ * A block gated by a directive, drawn as the closed box it is: it has a first
+ * line and a last line, and what it governs is the text between them. Every
+ * line carries the sides; the two ends carry the lid and the floor, because a
+ * box is drawn one line element at a time.
+ */
 .permission-block {
   background-color: var(--permission-bg);
-  border-left: 4px solid var(--permission-border);
-  padding: 4px 8px;
-  margin: 8px 0;
+  border-left: 1px solid var(--permission-border);
+  border-right: 1px solid var(--permission-border);
+  padding: 0 8px;
+  margin: 0;
+}
+
+.permission-block-start {
+  border-top: 1px solid var(--permission-border);
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+  padding-top: 4px;
+  margin-top: 8px;
+}
+
+.permission-block-end {
+  border-bottom: 1px solid var(--permission-border);
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+  padding-bottom: 4px;
+  margin-bottom: 8px;
+}
+
+/*
+ * A directive is a list, and each entry of it is marked on its own. The
+ * attributes below are combined on the same range - an entry can be a view
+ * switch and carry a window - so each is one visual channel and no channel
+ * repeats another.
+ *
+ * Every channel here has to survive being applied several times over one entry.
+ * The editor cuts a decoration wherever its own highlighting starts a token, so
+ * `4bhif[gestern]` reaches the page as four spans that each carry these classes:
+ * a background and an underline tile seamlessly across them and read as one
+ * marking, while a `::before` icon appears four times and horizontal padding
+ * pushes the entry apart at every bracket. Both were tried and both are why
+ * there is nothing but colour, weight and line style below.
+ */
+.safelearn-entry {
+  background-color: var(--entry-bg);
+  border-bottom: 1px solid var(--entry-border);
+}
+
+/* A window the server will honour: this block appears or disappears with nobody editing it. */
+.safelearn-entry-timed {
+  border-bottom-width: 2px;
+  border-bottom-style: dashed;
+  border-bottom-color: var(--entry-timed-border);
+}
+
+/* A window the server will discard - which leaves the entry permanently active. */
+.safelearn-entry-broken {
+  background-color: var(--entry-broken-bg);
+  border-bottom-color: transparent;
+  text-decoration: underline wavy var(--entry-broken-underline);
+  text-decoration-skip-ink: none;
+}
+
+/* Not an address: resolved against the reader's own preferences, not against who they are. */
+.safelearn-entry-switch {
+  background-color: var(--entry-switch-bg);
+  border-bottom-color: var(--entry-switch-border);
+  font-style: italic;
+}
+
+/* The switch prefix with none of the three names behind it: it decides nothing. */
+.safelearn-entry-unresolved {
+  background-color: transparent;
+  border-bottom-style: dotted;
+  color: var(--entry-unresolved-fg);
+}
+
+/*
+ * The first line gates the whole file, and has no closing marker to end it. So
+ * it is deliberately *not* a box: an open rule the document begins under, in a
+ * deeper tone than the blocks. What it governs is everything below, and there is
+ * no second marker anywhere to draw the other end of.
+ */
+.permission-file {
+  background-color: var(--permission-file-bg);
+  border-bottom: 2px solid var(--permission-file-border);
+  padding: 4px 8px 2px;
+  margin: 0 0 8px;
+}
+
+/* Nothing here reads as an entry, so the server shows this text to nobody at all. */
+.permission-withheld {
+  background-color: var(--permission-withheld-bg);
+  border-left: 4px solid var(--permission-withheld-border);
 }
 
 .side-by-side-block {
@@ -65,10 +155,23 @@
   --fragment-fg: #51320c;
   --fragment-border: #f59c2e8e;
 
-  --permission-bg: #ede2e218;
-  --permission-border: #db9a8fdc;
+  --permission-bg: #f5c84212;
+  --permission-border: #c8961e77;
   --permission-label-bg: #f9e2e2;
   --permission-label-fg: #225577;
+  --permission-withheld-bg: #b0000012;
+  --permission-withheld-border: #b00000aa;
+  --permission-file-bg: #e0900016;
+  --permission-file-border: #e09000cc;
+
+  --entry-bg: #8899aa18;
+  --entry-border: #8899aacc;
+  --entry-timed-border: #2a7f9e;
+  --entry-unresolved-fg: #8a8a8a;
+  --entry-broken-bg: #b0000018;
+  --entry-broken-underline: #b00000cc;
+  --entry-switch-bg: #7852ee18;
+  --entry-switch-border: #7852eeaa;
 
   --side-separator-fg: #aaaacc;
   --side-block-bg: #f4f4f9;
@@ -82,10 +185,23 @@
   --fragment-fg: #6a5c4b;
   --fragment-border: #f59c2e63;
 
-  --permission-bg: #290a0510;
-  --permission-border: #290a05;
+  --permission-bg: #e0b0400e;
+  --permission-border: #e0b04055;
   --permission-label-bg: #573934;
   --permission-label-fg: #b2dfdb;
+  --permission-withheld-bg: #ff525214;
+  --permission-withheld-border: #ff5252aa;
+  --permission-file-bg: #f0a03014;
+  --permission-file-border: #f0a030bb;
+
+  --entry-bg: #8899aa14;
+  --entry-border: #8899aa99;
+  --entry-timed-border: #6fb3cc;
+  --entry-unresolved-fg: #8a8a8a;
+  --entry-broken-bg: #ff525214;
+  --entry-broken-underline: #ff5252cc;
+  --entry-switch-bg: #9e88f218;
+  --entry-switch-border: #9e88f2aa;
 
   --side-separator-fg: #444466;
   --side-block-bg: #2a2a3337;

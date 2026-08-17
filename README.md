@@ -39,6 +39,30 @@ This block is for teachers only.
 @@@
 ```
 
+**A directive is now marked as the list it is.** The server splits the text after `@@@` on commas and reads every entry on its own, and so does the plugin: a directive naming four things carries four markings rather than one, and each says what is true of that entry.
+
+```markdown
+@@@ teacher                                     the whole file, if this is line 1
+@@@ 4bhif, teacher[2026-01-15T08:00:00]         one permanent entry, one that starts on a date
+@@@ 4bhif[to 2026-01-15T08:00:00]               until a moment
+@@@ 4bhif[2026-01-15T08:00:00 to 2026-01-15T12:00:00]
+@@@ #exam, #practice, #answer                   variants of the document, not an audience
+```
+
+What you can see at a glance, without reading a single timestamp:
+
+| Form | Shown as |
+| --- | --- |
+| A directive on the **first line** of a document | Gates the whole file and has no closing marker, so it is drawn as a rule the document begins under — not as a block that starts there. |
+| An entry carrying a **time window** | Marked apart from a permanent one. The block behind it appears or disappears with nobody editing the document, which is a different promise than a permanent grant. The marking never changes with the clock: a window that has closed looks exactly like one that has not opened. |
+| A window the server **cannot read** | Marked as one that will not take effect. `4bhif[yesterday]` is not an error to the server: it drops the window and keeps the entry, so the block is granted permanently to everyone that entry names. Nothing else anywhere reports this. |
+| A **view switch** (`#exam`, `#practice`, `#answer`) | Marked apart from a role, because it selects between variants of the document instead of addressing anyone. |
+| `#` with **none of those three names** | Marked as the switch that resolves to nothing: the server takes it out of the role test and then nothing decides anything. |
+| An entry the server **discards entirely** — `4bhif]`, `4bhif[2026-01-15T08:00:00] extra` | Carries no marking at all, while the entries beside it keep theirs. It addresses nobody. |
+| A directive **nothing readable** can be got out of | Marked at the line: the server withholds that text from every reader, an admin included. |
+
+The plugin still recognizes no more than the server does. What is marked is what the server will act on — the rules are taken from the server's own parser and are held against it by a check in the SafeLearn repository that runs both over the same directives.
+
 ### 🔹 Side-by-Side Columns (##side-by-side-start, ##separator)
 Creates multi-column layouts for wide Reveal.js slides.
 
