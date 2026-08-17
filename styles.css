@@ -94,13 +94,18 @@
 
 /*
  * The first line gates the whole file, and has no closing marker to end it. So
- * it is deliberately *not* a box: an open rule the document begins under, in a
- * deeper tone than the blocks. What it governs is everything below, and there is
- * no second marker anywhere to draw the other end of.
+ * it is the box every other block gets, with its lower edge left off: what it
+ * governs is everything below, and there is no second marker anywhere to draw
+ * the other end of. The open side says that by itself, which is why nothing has
+ * to be written into the heading to say it.
  */
 .permission-file {
   background-color: var(--permission-file-bg);
-  border-bottom: 2px solid var(--permission-file-border);
+  border-top: 2px solid var(--permission-file-border);
+  border-left: 2px solid var(--permission-file-border);
+  border-right: 2px solid var(--permission-file-border);
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
   padding: 4px 8px 2px;
   margin: 0 0 8px;
 }
@@ -147,6 +152,208 @@
 
 .safelearn-hidden {
   display: none !important;
+}
+
+/*
+ * ################### What stands where a tag stood ###################
+ *
+ * The heading a restricted block carries instead of its directive line, and the
+ * frame the rendered reading view draws around the block. Both views build these
+ * from one function, so a person switching view does not have to learn twice
+ * what they are looking at.
+ *
+ * A chip may carry what an entry mark may not. The note above `.safelearn-entry`
+ * explains why a mark can only use colour, weight and line style: the editor
+ * cuts a decoration wherever its own highlighting starts a token, so one entry
+ * reaches the page as several spans and a `::before` icon appears once per
+ * piece. A chip is one element that this plugin built, and has no such limit.
+ */
+.safelearn-heading {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  font-family: var(--font-interface);
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+
+.safelearn-chip {
+  background-color: var(--entry-bg);
+  border: 1px solid var(--entry-border);
+  border-radius: 4px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+/*
+ * One `::before` per element, so these rules overwrite one another where an
+ * entry is more than one thing at once. They are ordered so the more urgent
+ * answer wins: a window the server throws away outranks the fact that it is a
+ * window, and a token the server does not read at all outranks everything.
+ */
+.safelearn-chip::before {
+  content: "👤 ";
+  opacity: 0.45;
+}
+
+/* A window the server will honour: this block appears or disappears with nobody editing it. */
+.safelearn-chip-timed {
+  border-style: dashed;
+  border-color: var(--entry-timed-border);
+}
+
+.safelearn-chip-timed::before {
+  content: "⏱ ";
+  opacity: 0.7;
+}
+
+/* Not an address: resolved against the reader's own preferences, not against who they are. */
+.safelearn-chip-switch {
+  background-color: var(--entry-switch-bg);
+  border-color: var(--entry-switch-border);
+  font-style: italic;
+}
+
+.safelearn-chip-switch::before {
+  content: "⇄ ";
+  opacity: 0.7;
+}
+
+/* The switch prefix with none of the three names behind it: it decides nothing. */
+.safelearn-chip-unresolved {
+  background-color: transparent;
+  border-style: dotted;
+  color: var(--entry-unresolved-fg);
+}
+
+.safelearn-chip-unresolved::before {
+  content: "∅ ";
+  opacity: 0.7;
+}
+
+/* A window the server will discard - which leaves the entry permanently active. */
+.safelearn-chip-broken {
+  background-color: var(--entry-broken-bg);
+  border-color: var(--entry-broken-underline);
+  text-decoration: underline wavy var(--entry-broken-underline);
+  text-decoration-skip-ink: none;
+}
+
+.safelearn-chip-broken::before {
+  content: "⚠ ";
+  text-decoration: none;
+}
+
+/*
+ * A token the server does not read as an entry at all. It is shown rather than
+ * left out: where the characters are still on the page a discarded entry is told
+ * apart by the marking its neighbours have and it does not, but here they are
+ * gone, and omitting it would hide the mistake instead of showing it.
+ */
+.safelearn-chip-discarded {
+  background-color: transparent;
+  border-style: dotted;
+  border-color: var(--entry-unresolved-fg);
+  color: var(--entry-unresolved-fg);
+  text-decoration: line-through;
+}
+
+.safelearn-chip-discarded::before {
+  content: "✕ ";
+  text-decoration: none;
+}
+
+/* Nothing here reads as an entry, so the server shows this text to nobody at all. */
+.safelearn-heading-note {
+  background-color: var(--permission-withheld-bg);
+  border: 1px solid var(--permission-withheld-border);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+
+.safelearn-heading-note::before {
+  content: "🚫 ";
+}
+
+/*
+ * The frame in the rendered reading view. A block's lines are spread over
+ * several rendered sections, so the box is drawn the way the editor draws it -
+ * sides on every part, a lid on the first, a floor on the last.
+ */
+.safelearn-read-block {
+  background-color: var(--permission-bg);
+  border-left: 1px solid var(--permission-border);
+  border-right: 1px solid var(--permission-border);
+  padding: 2px 8px;
+  margin: 0;
+}
+
+/*
+ * Obsidian hands the plugin the section's wrapper and the paragraph inside it
+ * carries the spacing. Left alone, that spacing opens a gap between the frame
+ * and what the frame is drawn around.
+ */
+.safelearn-read-block > :first-child,
+.safelearn-read-file > :first-child {
+  margin-top: 0;
+}
+
+.safelearn-read-block > :last-child,
+.safelearn-read-file > :last-child {
+  margin-bottom: 0;
+}
+
+.safelearn-read-block-start {
+  border-top: 1px solid var(--permission-border);
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+  padding-top: 6px;
+  margin-top: 12px;
+}
+
+.safelearn-read-block-end {
+  border-bottom: 1px solid var(--permission-border);
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+  padding-bottom: 6px;
+  margin-bottom: 12px;
+}
+
+/* The same open-bottomed box the editor draws for the line that gates the file. */
+.safelearn-read-file {
+  background-color: var(--permission-file-bg);
+  border-top: 2px solid var(--permission-file-border);
+  border-left: 2px solid var(--permission-file-border);
+  border-right: 2px solid var(--permission-file-border);
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+  padding: 6px 8px 4px;
+  margin: 0 0 12px;
+}
+
+/*
+ * The columns the server makes of a side-by-side block. The widths are not
+ * reveal.js's and are not meant to be: what the reading view has to say is that
+ * there are columns and what is in each of them.
+ */
+.safelearn-columns {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.safelearn-column {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.safelearn-column > :first-child {
+  margin-top: 0;
+}
+
+.safelearn-column > :last-child {
+  margin-bottom: 0;
 }
 
 /* Light Theme */
