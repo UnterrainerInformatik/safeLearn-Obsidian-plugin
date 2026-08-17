@@ -47,6 +47,8 @@ This block is for teachers only.
 
 **And the directive line is shown as the heading of the block it opens.** In the reading view always; in the editor while the cursor is elsewhere. Put the cursor in the line — or run a selection across it — and its own characters are back and editable. Nothing is written into your file to make that happen: the characters that appear are the ones that were always there.
 
+**The closing `@@@` is now shown as the blank line the frame closes on.** It used to stand there as its own characters, alone among the markings the plugin quiets, and it had nothing to add: the frame around the block already says where the block ends. It follows the same rule as the line that opens the block — put the cursor in that blank line, or run a selection across it, and the `@@@` is back to be edited or deleted, which is how you open the block up again.
+
 A time window is reproduced exactly as you wrote it. The plugin will not turn `4bhif[2026-08-01T00:00:00 to 2026-08-20T00:00:00]` into "1–20 August", because that would claim a reading of it — and the server throws away windows that a readable restatement makes look sound.
 
 ```markdown

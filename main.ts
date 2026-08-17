@@ -749,6 +749,14 @@ type Block = {
   kind: "permission" | "side-by-side";
   from: number;
   to: number;
+  /**
+   * Whether `to` is the block's closing marker, or the last line of a document
+   * that never closed it. The walk below knows which of the two it settled on,
+   * and what stands on that line depends on the answer: a marker is the block's
+   * own punctuation and is hidden as such, the last line of an unclosed block is
+   * somebody's text.
+   */
+  closed: boolean;
   separators: number[];
 };
 
@@ -823,7 +831,7 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
       }
       // A closing marker with nothing open closes nothing and opens nothing.
     } else if (closesPermissionBlock(text)) {
-      blocks.push({ kind: "permission", from: permissionFrom, to: i, separators: [] });
+      blocks.push({ kind: "permission", from: permissionFrom, to: i, closed: true, separators: [] });
       permissionFrom = -1;
       continue;
     }
@@ -835,7 +843,7 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
         continue;
       }
     } else if (isMarkerLine(text, SIDE_BY_SIDE_END)) {
-      blocks.push({ kind: "side-by-side", from: sideFrom, to: i, separators });
+      blocks.push({ kind: "side-by-side", from: sideFrom, to: i, closed: true, separators });
       sideFrom = -1;
       continue;
     } else if (isMarkerLine(text, SEPARATOR)) {
@@ -848,10 +856,10 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
   // A block that is never closed ends at the end of the document and marks what
   // it covered, rather than costing everything after it its marking.
   if (permissionFrom !== -1) {
-    blocks.push({ kind: "permission", from: permissionFrom, to: lines.count, separators: [] });
+    blocks.push({ kind: "permission", from: permissionFrom, to: lines.count, closed: false, separators: [] });
   }
   if (sideFrom !== -1) {
-    blocks.push({ kind: "side-by-side", from: sideFrom, to: lines.count, separators });
+    blocks.push({ kind: "side-by-side", from: sideFrom, to: lines.count, closed: false, separators });
   }
 
   return { blocks, fileDirective };
@@ -972,6 +980,8 @@ type DocumentMarking = {
   lineClasses: Map<number, string[]>;
   /** Per line number, the entries of the directive standing on it. */
   directives: Map<number, DirectiveEntry[]>;
+  /** The lines that close a permission block, and therefore hold nothing else. */
+  closers: Set<number>;
   fileDirective: number | null;
 };
 
@@ -998,8 +1008,17 @@ function markLines(doc: Text): DocumentMarking {
     if (entries !== null) directives.set(line, entries);
   };
   if (fileDirective !== null) readDirective(fileDirective);
+
+  // The other end of the same blocks. A closing marker is punctuation and
+  // nothing else - there is no text of anybody's on that line to lose - so the
+  // editor is told which lines they are and shows them the way it shows the
+  // directive above them. Which lines those are is again the walk's conclusion,
+  // including its conclusion that a block was closed at all.
+  const closers = new Set<number>();
   for (const block of blocks) {
-    if (block.kind === "permission") readDirective(block.from);
+    if (block.kind !== "permission") continue;
+    readDirective(block.from);
+    if (block.closed) closers.add(block.to);
   }
 
   // The file-level form gates the whole document and has no closing marker; the
@@ -1032,12 +1051,12 @@ function markLines(doc: Text): DocumentMarking {
     for (const line of block.separators) carries(line, "side-by-side-separator");
   }
 
-  return { lineClasses, directives, fileDirective };
+  return { lineClasses, directives, closers, fileDirective };
 }
 
 function buildDecorations(view: EditorView, marking: DocumentMarking): DecorationSet {
   const doc = view.state.doc;
-  const { lineClasses, directives, fileDirective } = marking;
+  const { lineClasses, directives, closers, fileDirective } = marking;
 
   // Only the lines on screen produce decorations. A rebuild now happens on every
   // cursor move as well as on every keystroke, and there is nothing to gain from
@@ -1072,6 +1091,18 @@ function buildDecorations(view: EditorView, marking: DocumentMarking): Decoratio
           widget: new DirectiveHeadingWidget(line.text, number === fileDirective),
         }).range(line.from, line.to)
       );
+      continue;
+    }
+
+    // The same rule again, for the marker that closes the block. The directive
+    // above it has a heading to stand in its place; this one has nothing to say
+    // that the frame around the block does not already say, so what stands in
+    // its place is the blank line the frame closes on. It is hidden rather than
+    // made unreachable: the line stays where it is and the cursor can still be
+    // put in it, which is what brings the marker back to be edited or deleted -
+    // the only way there is to open the block up again.
+    if (closers.has(number) && !isTouched(line.from, line.to)) {
+      ranges.push(Decoration.replace({}).range(line.from, line.to));
       continue;
     }
 
