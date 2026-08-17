@@ -28,6 +28,8 @@ This will appear as a fragment.
 - Step 2
 ```
 
+**What counts as a fragment marker changed, and with it what gets highlighted.** The rule is now the rendering server's own — `##fragment` followed by whitespace or the end of the line, matched case-sensitively, every occurrence in a line rather than the first. It no longer has to stand alone on its line, so `- ##fragment two` is highlighted where it was not before; and `##FRAGMENT` and `##fragment.` are no longer highlighted, because the server does not act on them either. If you had learned the old behavior, this is the change you will notice: the highlight now marks what the server will act on, and nothing else. The highlight also covers the tag alone — the space after it is no longer part of it.
+
 ### 🔹 Permission Blocks (`@@@ role`)
 Visually wraps blocks meant for specific roles (like teacher, 4bhif, etc.) to make them clearly distinguishable while editing.
 **Example:**
@@ -60,6 +62,15 @@ Enable the plugin in Obsidian's settings.
 Obsidian v0.15.0 or later
 
 No external dependencies
+
+## 🧪 Verification
+The checks for this plugin live in the [SafeLearn](https://github.com/UnterrainerInformatik/safeLearn) repository rather than here, because they are driven from the Markdown corpus that repository ships. From a SafeLearn checkout:
+
+```bash
+npm run test:obsidian
+```
+
+It builds this plugin, assembles a throwaway vault out of that corpus, starts a real Obsidian and reports what the plugin did to the document. It needs no login and starts no server. `SAFELEARN_TEST_PLUGIN_DIR` points it at this checkout; `docs-testing.md` over there describes the rest.
 
 ## 🔐 Disclaimer
 This plugin does not enforce permissions. It is purely visual. All security filtering is expected to be done on your SafeLearn rendering server (e.g., via Node.js and Keycloak).
