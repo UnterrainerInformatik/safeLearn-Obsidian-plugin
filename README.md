@@ -10,7 +10,7 @@ SafeLearn is an open-source server that publishes a teacher's Markdown behind a 
 
 Settings → **Community plugins** → **Browse** → search for *SafeLearn Formatter* → **Install**, then **Enable**.
 
-Nothing to configure. No settings, no account, no network.
+Nothing to configure to use the tags below. The directory features further down are opt-in and need a safeLearn instance; everything else works with no settings, no account and no network.
 
 ## Write the tags from the menu
 
@@ -65,6 +65,37 @@ Reading view: the tags are gone, the headings remain.
 ![The sections it writes](assets/per-name-result.png)
 
 Five names are reserved (`admin`, `teacher`, `teachers`, `student`, `students`): SafeLearn reads them as *roles*, so a section for a student called `Students` is read by the whole school. The command writes your names unchanged and tells you when one of them was such a name.
+
+### Picking names from the directory
+
+*Restricted section per name…* and *Restrict selection…* both open the same dialog, and where a safeLearn instance is configured and you are logged in, that dialog gains a search field and a class dropdown above the text area. Typing there searches the school directory; picking a result adds it as a new line, exactly as if you had typed it. Typing or pasting a list still works exactly as before, before or after using the picker, and stays the *only* way to name someone the directory has no entry for — a guest, or a student not yet enrolled.
+
+With no instance configured, or with one configured but not logged in, this dialog is unchanged: no search field, no network activity.
+
+## Directory settings and login
+
+Open under Settings → **SafeLearn Formatter**.
+
+| Setting | What it's for |
+| --- | --- |
+| **safeLearn instance URL** | Your school's safeLearn server. Empty by default — everything below stays off until it is set. |
+| **Keycloak URL** / **Realm** | The identity provider your instance authenticates against. Both default to the project's shared identity provider and only need changing for a self-hosted Keycloak. |
+| **Log in** | Opens your realm's own login page in your system browser. No password is ever typed into Obsidian — the plugin only ever sees the token Keycloak hands back afterward. |
+| **Log out** | Discards that token. |
+
+Logging in also enables **List classes** in the command palette — a read-only, dismiss-when-read notice of every class-like value currently in the directory. (The server has no separate notion of "class" from any other role or group it tracks, so this is a best-effort reading of the same data the picker above uses, not an authoritative class list.)
+
+### Setting up the login (for whoever runs the safeLearn instance)
+
+Logging in needs a Keycloak client that does not exist by default. In the `safeLearn` realm, create a **public** client (this project's own convention names it `safelearn-plugin`) with:
+
+* Standard Flow enabled, PKCE (S256) required
+* Direct Access Grants **off** — no password grant
+* No client secret
+* Valid Redirect URIs: `obsidian://safelearn-formatter-auth`
+* No client roles of its own — what a login is allowed to do comes from the roles already on that person's Keycloak account, the same way the safeLearn server itself checks them
+
+This is a one-time setup step for the person administering the Keycloak realm, not something the plugin or a person using it can do. Nobody using only the tags earlier in this document needs it.
 
 ## Fragments — `##fragment`
 

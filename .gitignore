@@ -1,3 +1,7 @@
 
 node_modules/
 main.js
+
+# Obsidian's own `saveData`/`loadData` storage - per-installation, holds the
+# safeLearn instance URL and a refresh token if one is held. Never source.
+data.json

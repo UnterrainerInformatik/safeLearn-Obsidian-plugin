@@ -1,4 +1,16 @@
-import { App, Editor, MarkdownPostProcessorContext, MarkdownRenderer, Menu, Modal, Notice, Plugin } from "obsidian";
+import {
+  App,
+  Editor,
+  MarkdownPostProcessorContext,
+  MarkdownRenderer,
+  Menu,
+  Modal,
+  Notice,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+  requestUrl,
+} from "obsidian";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType } from "@codemirror/view";
 import { Range, Text } from "@codemirror/state";
 
@@ -23,9 +35,143 @@ declare module "obsidian" {
   }
 }
 
+// ################### Directory login: data, PKCE and the class heuristic ###################
+
+/**
+ * What `saveData`/`loadData` persist, in `data.json`.
+ *
+ * Only the refresh token is written here, never the access token - see
+ * `SafeLearnPlugin.refreshAccessToken`. `keycloakUrl` and `realm` exist
+ * because `keycloak.json` (the safeLearn server's own connection details) is
+ * deliberately never served to a browser, and a self-hosted deployment can
+ * point at a Keycloak of its own - so they are settings, each defaulted to
+ * this project's shared identity provider, the same default/override shape
+ * `docs-testing.md` already uses for `SAFELEARN_TEST_IDP_URL`/`SAFELEARN_TEST_REALM`.
+ */
+interface SafeLearnPluginData {
+  instanceUrl: string;
+  keycloakUrl: string;
+  realm: string;
+  refreshToken: string | null;
+}
+
+const DEFAULT_DATA: SafeLearnPluginData = {
+  instanceUrl: "",
+  keycloakUrl: "https://auth.unterrainer.info/",
+  realm: "safeLearn",
+  refreshToken: null,
+};
+
+/**
+ * The plugin's own Keycloak client - public, PKCE-only, no client roles of
+ * its own (`tasks.md` #1). Not a setting: it is this project's own
+ * convention, unlike the host and realm above, which vary per deployment.
+ */
+const DIRECTORY_CLIENT_ID = "safelearn-plugin";
+
+/**
+ * The safeLearn server's own Keycloak client id (`keycloak.json`'s `resource`) -
+ * where an access token's `resource_access` nests the roles `utils.js` reads
+ * server-side. Also this project's own fixed convention, not a setting.
+ */
+const SERVER_CLIENT_ID = "safeLearn";
+
+/** A person the directory has an entry for: what the search endpoint hands back, and nothing else. */
+interface DirectoryEntry {
+  name: string;
+  roles: Record<string, boolean>;
+}
+
+/** The five role/group values that mean "everyone holding this role", not a class. Mirrors `NAMES_RESERVED_FOR_ROLES`, lowercased. */
+const ROLE_MARKERS = new Set(["teacher", "teachers", "student", "students", "admin"]);
+
+/**
+ * Every role/group value across `entries` that is not one of the five
+ * built-in markers, de-duplicated.
+ *
+ * The backend has no closed notion of what counts as a class - `teacher`, a
+ * class, and something like `examParticipant` are one flat role/group map by
+ * design. This is therefore an accepted approximation (`design.md`): an
+ * exam-participant-style marker is occasionally listed as if it were a
+ * class, because the plugin cannot recover a distinction the backend never
+ * made.
+ */
+function classLikeValues(entries: DirectoryEntry[]): string[] {
+  const found = new Set<string>();
+  for (const entry of entries) {
+    for (const role of Object.keys(entry.roles)) {
+      if (!ROLE_MARKERS.has(role.toLowerCase())) found.add(role);
+    }
+  }
+  return [...found].sort((a, b) => a.localeCompare(b));
+}
+
+function stripTrailingSlash(url: string): string {
+  return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+/** A URL setting typed without a scheme resolves against nothing and fails outright - default it to `https://`. */
+function ensureProtocol(url: string): string {
+  return /^https?:\/\//i.test(url) ? url : `https://${url}`;
+}
+
+// PKCE (RFC 7636). A code verifier and a login's `state` are both just
+// unguessable random strings, so one generator serves both.
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function randomPkceString(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return base64UrlEncode(bytes);
+}
+
+/** `S256`: the base64url-encoded SHA-256 digest of the verifier. Web Crypto, not Node's - see `design.md` on mobile support. */
+async function pkceChallenge(verifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+/**
+ * The access token's own `resource_access[resource].roles`, read locally from its
+ * unverified payload - the same claim `utils.js`'s `getClientRoles` reads server-side
+ * off `keycloakConfig.resource` (`safeLearn`). Never used to establish trust (the
+ * server still checks the token itself on every call); only to tell a person, from
+ * their own already-issued token, whether the directory endpoint's teacher-or-admin
+ * gate will let them through - the endpoint's own refusal does not say why, on purpose.
+ */
+function accessTokenResourceRoles(token: string, resource: string): string[] {
+  const parts = token.split(".");
+  if (parts.length < 2) return [];
+  try {
+    let base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const pad = base64.length % 4;
+    if (pad) base64 += "=".repeat(4 - pad);
+    const payload = JSON.parse(atob(base64));
+    const roles = payload?.resource_access?.[resource]?.roles;
+    return Array.isArray(roles) ? roles : [];
+  } catch {
+    return [];
+  }
+}
+
 export default class SafeLearnPlugin extends Plugin {
+  data: SafeLearnPluginData = DEFAULT_DATA;
+
+  /** In memory only - never written to `data.json`. See `design.md`. */
+  private accessToken: string | null = null;
+  private accessTokenExpiresAt = 0;
+
+  /** A login in progress, keyed by its `state`, so a mismatched callback can be told apart from a real one. */
+  private pendingLogins = new Map<string, string>();
+
   async onload() {
     console.log("✅ SafeLearn plugin loaded");
+
+    this.data = Object.assign({}, DEFAULT_DATA, await this.loadData());
 
     this.registerEditorExtension(safelearnHighlighter);
     this.registerMarkdownPostProcessor((el, ctx) => hideTags(el, ctx, this));
@@ -83,6 +229,354 @@ export default class SafeLearnPlugin extends Plugin {
         });
       })
     );
+
+    this.addSettingTab(new SafeLearnSettingTab(this.app, this));
+
+    this.registerObsidianProtocolHandler(this.protocolAction(), (params) => this.handleAuthCallback(params));
+
+    // Read-only, no editor needed - this is not one of `AUTHORING_COMMANDS`.
+    // `checkCallback` is Obsidian's own mechanism for a command that is only
+    // sometimes available: returning `false` here is what keeps it out of the
+    // palette while no login is held, per `plugin-directory-auth`'s "stays
+    // silent" requirement - see `tasks.md` #6.4.
+    this.addCommand({
+      id: "list-classes",
+      name: "List classes",
+      checkCallback: (checking) => {
+        if (!this.hasLogin()) return false;
+        if (!checking) void this.listClasses();
+        return true;
+      },
+    });
+
+    // Not awaited: onload should not block Obsidian's own startup on a
+    // network round trip, and a failure here is not an error anyone sees -
+    // it just leaves the plugin "not logged in" until a person logs in again.
+    // See `tasks.md` #5.2.
+    if (this.data.refreshToken) void this.refreshAccessToken();
+  }
+
+  // ################### Settings (2) ###################
+
+  async saveSettings() {
+    await this.saveData(this.data);
+  }
+
+  /** The configured safeLearn instance URL, or `null` if unset - callers never re-check for blank/whitespace themselves. */
+  instanceUrl(): string | null {
+    const trimmed = this.data.instanceUrl.trim();
+    return trimmed === "" ? null : ensureProtocol(trimmed);
+  }
+
+  private keycloakUrl(): string {
+    const trimmed = this.data.keycloakUrl.trim();
+    return trimmed === "" ? DEFAULT_DATA.keycloakUrl : ensureProtocol(trimmed);
+  }
+
+  private realm(): string {
+    const trimmed = this.data.realm.trim();
+    return trimmed === "" ? DEFAULT_DATA.realm : trimmed;
+  }
+
+  private authorizationEndpoint(): string {
+    return `${stripTrailingSlash(this.keycloakUrl())}/realms/${this.realm()}/protocol/openid-connect/auth`;
+  }
+
+  private tokenEndpoint(): string {
+    return `${stripTrailingSlash(this.keycloakUrl())}/realms/${this.realm()}/protocol/openid-connect/token`;
+  }
+
+  /** `obsidian://<manifest-id>-auth` - namespaced by the plugin's own id, since the action name is a namespace every plugin shares. See `design.md`. */
+  private protocolAction(): string {
+    return `${this.manifest.id}-auth`;
+  }
+
+  private redirectUri(): string {
+    return `obsidian://${this.protocolAction()}`;
+  }
+
+  // ################### Login state ###################
+
+  /** Whether the plugin currently holds a usable identity. Everything that depends on a login checks this, and only this. */
+  hasLogin(): boolean {
+    return this.accessToken !== null;
+  }
+
+  /**
+   * Whether the held token's own claims carry the teacher/admin role the directory
+   * endpoint gates on. Diagnostic only, for the settings tab - nothing else gates on
+   * this, since the endpoint's own refusal already collapses "no role" into the same
+   * response as "not logged in" (`app.js`), and every other feature must keep doing
+   * the same rather than being able to tell the two apart from a failed call.
+   */
+  hasDirectoryRole(): boolean {
+    if (!this.accessToken) return false;
+    const roles = accessTokenResourceRoles(this.accessToken, SERVER_CLIENT_ID);
+    return roles.includes("teacher") || roles.includes("teachers") || roles.includes("admin");
+  }
+
+  // ################### PKCE login (4) ###################
+
+  /** Starts a login: opens the realm's own login page in the system browser and returns immediately - the rest happens in `handleAuthCallback`. */
+  async login() {
+    const verifier = randomPkceString();
+    const state = randomPkceString();
+    const challenge = await pkceChallenge(verifier);
+    this.pendingLogins.set(state, verifier);
+
+    const url = new URL(this.authorizationEndpoint());
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("client_id", DIRECTORY_CLIENT_ID);
+    url.searchParams.set("redirect_uri", this.redirectUri());
+    url.searchParams.set("scope", "openid");
+    url.searchParams.set("state", state);
+    url.searchParams.set("code_challenge", challenge);
+    url.searchParams.set("code_challenge_method", "S256");
+
+    // Obsidian polyfills `window.open` to the OS's default browser on both
+    // desktop and mobile - no Electron-specific call, so this is unchanged
+    // wherever the plugin runs. See `design.md`.
+    window.open(url.toString());
+  }
+
+  /** Discards the held identity. Nothing that depends on a login is offered again until logging in. */
+  logout() {
+    this.data.refreshToken = null;
+    this.accessToken = null;
+    this.accessTokenExpiresAt = 0;
+    void this.saveSettings();
+  }
+
+  /**
+   * Handles `obsidian://<manifest-id>-auth?...`.
+   *
+   * `obsidian://` callbacks are dispatched to whichever Obsidian window is
+   * frontmost, not necessarily the vault that started the login - so a
+   * callback whose `state` does not match a login this vault's plugin
+   * instance is actually waiting on is dropped without a notice, per
+   * `design.md`.
+   */
+  private async handleAuthCallback(params: Record<string, string>) {
+    const state = params.state;
+    const verifier = typeof state === "string" ? this.pendingLogins.get(state) : undefined;
+    if (!verifier || typeof state !== "string") return;
+    this.pendingLogins.delete(state);
+
+    if (typeof params.code !== "string") return;
+
+    try {
+      await this.exchangeCodeForTokens(params.code, verifier);
+    } catch (error) {
+      console.error("SafeLearn: the login could not be completed.", error);
+    }
+  }
+
+  private async exchangeCodeForTokens(code: string, verifier: string) {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: this.redirectUri(),
+      client_id: DIRECTORY_CLIENT_ID,
+      code_verifier: verifier,
+    });
+    await this.applyTokenResponse(body);
+  }
+
+  // ################### Token storage and refresh (5) ###################
+
+  /**
+   * Refreshes the access token from the stored refresh token.
+   *
+   * A failure here - the refresh token itself expired or was revoked -
+   * clears it and returns the plugin to "not logged in" rather than being
+   * retried on every subsequent call. See `tasks.md` #5.4.
+   */
+  async refreshAccessToken(): Promise<boolean> {
+    const refreshToken = this.data.refreshToken;
+    if (!refreshToken) return false;
+
+    const body = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: DIRECTORY_CLIENT_ID,
+    });
+
+    try {
+      await this.applyTokenResponse(body);
+      return true;
+    } catch (error) {
+      this.data.refreshToken = null;
+      this.accessToken = null;
+      this.accessTokenExpiresAt = 0;
+      void this.saveSettings();
+      return false;
+    }
+  }
+
+  private async applyTokenResponse(body: URLSearchParams) {
+    const response = await requestUrl({
+      url: this.tokenEndpoint(),
+      method: "POST",
+      contentType: "application/x-www-form-urlencoded",
+      body: body.toString(),
+      throw: false,
+    });
+    if (response.status >= 400) {
+      throw new Error(`Keycloak's token endpoint answered with status ${response.status}.`);
+    }
+    const json = response.json;
+    this.accessToken = json.access_token;
+    this.accessTokenExpiresAt = Date.now() + Math.max(0, Number(json.expires_in) - 30) * 1000;
+    this.data.refreshToken = json.refresh_token ?? this.data.refreshToken;
+    await this.saveSettings();
+  }
+
+  /** Refreshes the access token first when it is missing or close to expiry. Called before every directory client call. */
+  private async ensureAccessToken(): Promise<string | null> {
+    if (this.accessToken && Date.now() < this.accessTokenExpiresAt) return this.accessToken;
+    const refreshed = await this.refreshAccessToken();
+    return refreshed ? this.accessToken : null;
+  }
+
+  // ################### Directory client (3) ###################
+
+  /**
+   * Searches the configured instance's directory. An empty `query` asks for
+   * the whole directory - what "list classes" and the class-filter dropdown
+   * both build on, now that the endpoint answers one that way.
+   *
+   * A refusal from the endpoint - no token, an expired one, or a caller
+   * lacking teacher/admin - is deliberately undifferentiated here from not
+   * being logged in at all (`tasks.md` #3.2): this returns `[]` rather than
+   * surfacing the server's response.
+   */
+  async searchDirectory(query: string): Promise<DirectoryEntry[]> {
+    const instanceUrl = this.instanceUrl();
+    if (!instanceUrl) return [];
+
+    const token = await this.ensureAccessToken();
+    if (!token) return [];
+
+    const url = `${stripTrailingSlash(instanceUrl)}/api/admin/directory/search?q=${encodeURIComponent(query)}`;
+    const response = await requestUrl({
+      url,
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      throw: false,
+    });
+    if (response.status >= 400) return [];
+
+    const body = response.json;
+    if (!Array.isArray(body)) return [];
+    return body.map((entry) => ({ name: String(entry?.name ?? ""), roles: entry?.roles ?? {} }));
+  }
+
+  /** Every class-like value the directory currently holds - the one fetch both "list classes" (6) and the class dropdown (7.2) build on. */
+  async classLikeValues(): Promise<string[]> {
+    return classLikeValues(await this.searchDirectory(""));
+  }
+
+  // ################### "List classes" command (6) ###################
+
+  private async listClasses() {
+    const classes = await this.classLikeValues();
+    new Notice(
+      classes.length > 0
+        ? `Classes in the directory: ${classes.join(", ")}`
+        : "The directory currently holds no class-like role/group value.",
+      0
+    );
+  }
+}
+
+/**
+ * The plugin's own settings: the safeLearn instance URL, its Keycloak realm,
+ * and the login controls. See `design.md` for why Keycloak URL and realm are
+ * settings of their own rather than derived from the instance URL.
+ */
+class SafeLearnSettingTab extends PluginSettingTab {
+  constructor(
+    app: App,
+    private readonly plugin: SafeLearnPlugin
+  ) {
+    super(app, plugin);
+  }
+
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName("safeLearn instance URL")
+      .setDesc(
+        "The base URL of your school's safeLearn server. Left empty, every directory feature below stays off."
+      )
+      .addText((text) => {
+        text
+          .setPlaceholder("https://safelearn.example.org")
+          .setValue(this.plugin.data.instanceUrl)
+          .onChange(async (value) => {
+            this.plugin.data.instanceUrl = value;
+            await this.plugin.saveSettings();
+          });
+        // Refreshed on blur, not on every keystroke: rebuilding the whole tab
+        // per character would drop the field's focus while typing.
+        text.inputEl.addEventListener("blur", () => this.display());
+      });
+
+    new Setting(containerEl)
+      .setName("Keycloak URL")
+      .setDesc("The identity provider your safeLearn instance authenticates against. Only needed for a self-hosted Keycloak.")
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_DATA.keycloakUrl)
+          .setValue(this.plugin.data.keycloakUrl)
+          .onChange(async (value) => {
+            this.plugin.data.keycloakUrl = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Realm")
+      .setDesc("The Keycloak realm your safeLearn instance uses.")
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_DATA.realm)
+          .setValue(this.plugin.data.realm)
+          .onChange(async (value) => {
+            this.plugin.data.realm = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Everything below depends on a configured instance, and stays silent -
+    // not shown, not an error - while there is none. See `plugin-directory-auth`.
+    if (!this.plugin.instanceUrl()) return;
+
+    const login = new Setting(containerEl).setName("Login").setDesc(
+      this.plugin.hasLogin()
+        ? this.plugin.hasDirectoryRole()
+          ? 'Logged in. The directory picker and "List classes" are available.'
+          : "Logged in, but this account has no teacher or admin role on this safeLearn instance — the directory picker and \"List classes\" will stay empty. Ask whoever administers the realm to grant one, or log in as a different account."
+        : 'Log in to use the directory picker and "List classes".'
+    );
+
+    if (this.plugin.hasLogin()) {
+      login.addButton((button) =>
+        button.setButtonText("Log out").onClick(() => {
+          this.plugin.logout();
+          this.display();
+        })
+      );
+    } else {
+      login.addButton((button) =>
+        button
+          .setButtonText("Log in")
+          .setCta()
+          .onClick(() => void this.plugin.login())
+      );
+    }
   }
 }
 
@@ -1438,7 +1932,7 @@ const AUTHORING_COMMANDS: AuthoringCommand[] = [
     icon: "users",
     run: (editor, plugin) =>
       new NameListModal(
-        plugin.app,
+        plugin,
         "A restricted section for each name",
         (names) => insertSectionsPerName(editor, names)
       ).open(),
@@ -1449,7 +1943,7 @@ const AUTHORING_COMMANDS: AuthoringCommand[] = [
     // It is about what is closed.
     icon: "lock",
     run: (editor, plugin) =>
-      new NameListModal(plugin.app, "Restrict what is selected to", (entries) =>
+      new NameListModal(plugin, "Restrict what is selected to", (entries) =>
         restrictSelection(editor, entries)
       ).open(),
   },
@@ -1713,22 +2207,23 @@ function reportReservedNames(names: string[]) {
 }
 
 /**
- * Asks for a list of names, one per line.
+ * Asks for a list of names, one per line - now with an optional directory
+ * picker above the field, where a login is held.
  *
- * A text field rather than a picker, because there is no directory to pick from
- * yet - and rather than the selected text or a file in the vault, because the
- * first makes selecting the wrong thing a silent way to generate the wrong
- * document, and the second is a second source of truth beside the directory that
- * is coming. When it comes, this is where the picker goes and nothing else about
- * these commands changes.
+ * Typing or pasting stays possible either way: the directory has no entry
+ * for a guest, or for a student not yet enrolled, so the field this dialog
+ * used to be entirely is still all of it that is guaranteed to work. With no
+ * instance configured, or with one configured but no login held, the picker
+ * is not rendered at all and this dialog is pixel-for-pixel what it was
+ * before `plugin-admin-directory-ui` - see `tasks.md` #8.
  */
 class NameListModal extends Modal {
   constructor(
-    app: App,
+    private readonly plugin: SafeLearnPlugin,
     private readonly title: string,
     private readonly onList: (names: string[]) => void
   ) {
-    super(app);
+    super(plugin.app);
   }
 
   onOpen() {
@@ -1736,7 +2231,20 @@ class NameListModal extends Modal {
     contentEl.createEl("h3", { text: this.title });
     contentEl.createEl("p", { text: "One name per line. Paste a class list straight in." });
 
-    const input = contentEl.createEl("textarea");
+    // Declared before the search strip is built, and assigned after: the
+    // strip's result items append into this field, and it has to exist by
+    // the time a person can click one, not by the time this function returns.
+    let input: HTMLTextAreaElement;
+    const appendName = (name: string) => {
+      const trimmed = name.trim();
+      if (trimmed === "") return;
+      const separator = input.value.length > 0 && !input.value.endsWith("\n") ? "\n" : "";
+      input.value += separator + trimmed;
+    };
+
+    if (this.plugin.hasLogin()) void this.buildDirectorySearch(contentEl, appendName);
+
+    input = contentEl.createEl("textarea");
     input.rows = 10;
     input.style.width = "100%";
 
@@ -1763,6 +2271,70 @@ class NameListModal extends Modal {
       .addEventListener("click", confirm);
 
     input.focus();
+  }
+
+  /**
+   * The search input, the class-filter dropdown, and the results list -
+   * everything above the textarea.
+   *
+   * Nothing here is a `<button>`: `answerNameList` and `dialogBoxes`
+   * (`test/obsidian/harness.js`) find the field and the confirmation by
+   * querying the modal for its first input/textarea and its first button,
+   * and a button here would be found first and break both.
+   */
+  private async buildDirectorySearch(contentEl: HTMLElement, appendName: (name: string) => void) {
+    const container = contentEl.createDiv({ cls: "safelearn-directory-search" });
+
+    const query = container.createEl("input", { type: "text", cls: "safelearn-directory-search-query" });
+    query.placeholder = "Search the directory…";
+    query.style.width = "100%";
+
+    const filter = container.createEl("select", { cls: "safelearn-directory-class-filter" });
+    filter.createEl("option", { text: "All classes", value: "" });
+
+    const results = contentEl.createDiv({ cls: "safelearn-directory-results" });
+
+    const renderResults = (entries: DirectoryEntry[]) => {
+      results.empty();
+      for (const entry of entries) {
+        const item = results.createDiv({ cls: "safelearn-directory-result" });
+        // The display name alone, not the whole rendered text: a check needs
+        // to find a specific match without depending on how the roles beside
+        // it are formatted for reading.
+        item.setAttribute("data-safelearn-name", entry.name);
+        item.setText(`${entry.name} — ${Object.keys(entry.roles).join(", ") || "no roles"}`);
+        item.addEventListener("click", () => appendName(entry.name));
+      }
+    };
+
+    // The server takes one query, matched against a name or a role/group -
+    // there is no combined "text AND class" query to send. So a class filter
+    // narrows whatever the text query (or, with none typed, the class value
+    // itself) came back with, client-side.
+    const runSearch = async () => {
+      const text = query.value.trim();
+      const selectedClass = filter.value;
+      if (text === "" && selectedClass === "") {
+        results.empty();
+        return;
+      }
+      const entries = await this.plugin.searchDirectory(text !== "" ? text : selectedClass);
+      const matches =
+        selectedClass === ""
+          ? entries
+          : entries.filter((entry) => Object.keys(entry.roles).includes(selectedClass));
+      renderResults(matches);
+    };
+
+    let debounceHandle: number | undefined;
+    query.addEventListener("input", () => {
+      window.clearTimeout(debounceHandle);
+      debounceHandle = window.setTimeout(() => void runSearch(), 300);
+    });
+    filter.addEventListener("change", () => void runSearch());
+
+    // Fetched once per modal open, not per keystroke - see `tasks.md` #7.2.
+    for (const value of await this.plugin.classLikeValues()) filter.createEl("option", { text: value, value });
   }
 
   onClose() {

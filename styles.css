@@ -441,6 +441,48 @@
 }
 
 /*
+ * The directory search strip `NameListModal` gains above its textarea where a
+ * login is held (`plugin-admin-directory-ui`). Obsidian's own theme
+ * variables throughout, rather than variables of this file's own: it sits in
+ * a native dialog, not in decorated document text, and should look like the
+ * rest of that dialog.
+ */
+.safelearn-directory-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.safelearn-directory-search-query {
+  flex: 1 1 auto;
+}
+
+.safelearn-directory-class-filter {
+  flex: 0 0 auto;
+}
+
+.safelearn-directory-results {
+  max-height: 160px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+}
+
+.safelearn-directory-results:empty {
+  display: none;
+}
+
+.safelearn-directory-result {
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.safelearn-directory-result:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+/*
  * Light Theme
  *
  * A directive gating the whole file and a directive gating one block are drawn
