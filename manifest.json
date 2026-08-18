@@ -1,7 +1,7 @@
 {
   "id": "safelearn-formatter",
   "name": "SafeLearn Formatter",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "minAppVersion": "1.5.7",
   "description": "Offers visual aids for tags specific for SafeLearn (an open-source project) such as ##fragment, permission blocks, and side-by-side layouts for Reveal.js.",
   "author": "UnterrainerInformatik",
