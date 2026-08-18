@@ -14,17 +14,17 @@ Nothing to configure. No settings, no account, no network.
 
 ## Write the tags from the menu
 
-Right-click in the editor. The same five commands are in the command palette.
+Right-click in the editor and open **SafeLearn**. The same five are in the command palette, under *SafeLearn Formatter*.
 
 ![The editor's context menu](assets/menu.png)
 
 | Command | What it writes |
 | --- | --- |
-| **Insert side-by-side block** | Two columns. |
-| **…with a chosen number of columns** | Asks how many, defaults to three. |
-| **Insert fragment marker** | `##fragment` above the block the cursor is in. |
-| **Insert a restricted section for each name** | One block per name — paste a class list. |
-| **Restrict the selection to named readers** | Wraps the selection in a directive. |
+| **Side-by-side block** | Two columns. |
+| **Side-by-side, n columns…** | Asks how many, defaults to three. |
+| **Fragment marker** | `##fragment` above the block the cursor is in. |
+| **Restricted section per name…** | One restricted block per name — paste a class list. |
+| **Restrict selection…** | Wraps the selection in a directive. |
 
 With text selected, a side-by-side command encloses it whole and puts the separator after it. Every marker lands on a line of its own.
 
@@ -58,7 +58,7 @@ Reading view: the tags are gone, the headings remain.
 
 ### A section per student
 
-*Insert a restricted section for each name* takes a pasted class list and writes one block per person, each with a heading **inside** the block — a heading above it would show every student the names of all the others.
+*Restricted section per name…* takes a pasted class list and writes one block per person, each with a heading **inside** the block — a heading above it would show every student the names of all the others.
 
 ![The class list dialog](assets/name-list.png)
 

@@ -1,6 +1,27 @@
-import { App, Editor, MarkdownPostProcessorContext, MarkdownRenderer, Modal, Notice, Plugin } from "obsidian";
+import { App, Editor, MarkdownPostProcessorContext, MarkdownRenderer, Menu, Modal, Notice, Plugin } from "obsidian";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType } from "@codemirror/view";
 import { Range, Text } from "@codemirror/state";
+
+/**
+ * `MenuItem.setSubmenu` is API Obsidian has and does not publish.
+ *
+ * The application defines it - 1.13.7 puts it on the object `Menu.addItem`
+ * hands out, and Obsidian builds its own **Format** and **Table** entries with
+ * it - while the `obsidian` typings declare only `setTitle`, `setIcon`,
+ * `setSection` and `onClick`. Declared here, in one place and in words, rather
+ * than reached with an `as any` at the call site: a cast there would silence
+ * every other mistake in the same expression along with the one thing it is
+ * for. If a later `obsidian` package declares it too, this merges silently; if
+ * it declares it differently, that is a compile error, which is where it
+ * belongs. Either way it is this block to delete.
+ *
+ * The call itself is still guarded - see the `editor-menu` subscription.
+ */
+declare module "obsidian" {
+  interface MenuItem {
+    setSubmenu(): Menu;
+  }
+}
 
 export default class SafeLearnPlugin extends Plugin {
   async onload() {
@@ -22,17 +43,44 @@ export default class SafeLearnPlugin extends Plugin {
     }
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
-        for (const command of AUTHORING_COMMANDS) {
-          menu.addItem((item) =>
-            item
-              .setTitle(command.name)
-              // The menu belongs to Obsidian and other plugins fill it too. A
-              // section of its own keeps these entries together without any of
-              // them being moved.
-              .setSection(MENU_SECTION)
-              .onClick(() => command.run(editor, this))
-          );
+        // Every command, offered in whichever menu is passed in. A section is
+        // what an entry needs only while it stands among Obsidian's own and
+        // other plugins': inside a menu of our own it would buy nothing but
+        // separators between the five.
+        const offerAll = (target: Menu, section: string | null) => {
+          for (const command of AUTHORING_COMMANDS) {
+            target.addItem((entry) => {
+              entry
+                .setTitle(command.name)
+                .setIcon(command.icon)
+                .onClick(() => command.run(editor, this));
+              if (section !== null) entry.setSection(section);
+            });
+          }
+        };
+
+        // Where nothing can be nested, the menu this plugin builds is the one
+        // it built before this change: the five standing together in a section
+        // of their own. Asked before anything is added rather than discovered
+        // halfway through - an entry that opens nothing is not that menu.
+        if (!canNestMenus()) {
+          offerAll(menu, MENU_SECTION);
+          return;
         }
+
+        // One entry, with everything under it. The menu belongs to Obsidian and
+        // other plugins fill it too, so what this plugin costs somebody who
+        // wants none of it is one line rather than one per command.
+        menu.addItem((item) => {
+          item
+            // A section of its own is how the entry says where it belongs among
+            // Obsidian's groups rather than landing wherever the order of
+            // subscription put it. Asked of the one entry now, not of five.
+            .setSection(MENU_SECTION)
+            .setTitle(MENU_TITLE)
+            .setIcon(MENU_ICON);
+          offerAll(item.setSubmenu(), null);
+        });
       })
     );
   }
@@ -1287,12 +1335,67 @@ const safelearnHighlighter = ViewPlugin.fromClass(
 /** One thing the plugin can write into a document. */
 type AuthoringCommand = {
   id: string;
+  /**
+   * One name, for wherever the command is offered.
+   *
+   * Short enough to read in a menu, because the palette supplies the rest: it
+   * shows a command as `<plugin name>: <command name>`, so the words a second,
+   * longer name would add there are the ones the prefix already says. A second
+   * label kept for the second surface is a label that can come to disagree with
+   * the first.
+   */
   name: string;
+  /**
+   * The icon this command is shown with, named as the running Obsidian names
+   * it.
+   *
+   * Not optional. A menu item is laid out as an icon column and a title beside
+   * it, so an entry without one does not sit further left - it leaves the column
+   * empty while its title stands where the others' do, which reads as something
+   * that failed to load rather than as restraint.
+   *
+   * Obsidian ships a subset of Lucide, frozen at the version it bundles, and a
+   * name that subset does not hold draws nothing and raises nothing. So these
+   * are confirmed against `getIconIds()` in the running application rather than
+   * against lucide.dev.
+   */
+  icon: string;
   run(editor: Editor, plugin: SafeLearnPlugin): void;
 };
 
-/** Where the plugin's entries stand in a context menu it does not own. */
+/** Where the plugin's entry stands in a context menu it does not own. */
 const MENU_SECTION = "safelearn";
+
+/** The one entry the plugin contributes to that menu, and what it carries. */
+const MENU_TITLE = "SafeLearn";
+
+/** The one icon in Obsidian's set that says *school* rather than *some plugin*. */
+const MENU_ICON = "graduation-cap";
+
+/**
+ * Whether this Obsidian can nest one menu inside another.
+ *
+ * `MenuItem.setSubmenu` is asked for on an item `Menu.addItem` handed out,
+ * which is the only place that object exists - but on a menu of the plugin's
+ * own, and before anything is added to the one somebody is waiting for. The
+ * answer then decides which menu gets built, instead of being discovered
+ * halfway through building it and leaving a `SafeLearn` entry that opens
+ * nothing standing in the fallback.
+ *
+ * Asked once. Whether the application defines a method does not change while it
+ * is running, and this is reached from a handler that runs at every right-click.
+ */
+let nestsMenus: boolean | null = null;
+
+function canNestMenus(): boolean {
+  if (nestsMenus !== null) return nestsMenus;
+  let nests = false;
+  new Menu().addItem((item) => {
+    nests = typeof item.setSubmenu === "function";
+  });
+  nestsMenus = nests;
+  return nests;
+}
 
 /**
  * Every authoring command, in one list.
@@ -1304,7 +1407,9 @@ const MENU_SECTION = "safelearn";
 const AUTHORING_COMMANDS: AuthoringCommand[] = [
   {
     id: "insert-side-by-side",
-    name: "Insert side-by-side block",
+    name: "Side-by-side block",
+    // What it makes.
+    icon: "columns",
     run: (editor) => insertSideBySide(editor, 2),
   },
   {
@@ -1312,18 +1417,25 @@ const AUTHORING_COMMANDS: AuthoringCommand[] = [
     // of their own that a person reads past every time. So: two without asking,
     // and one command that asks.
     id: "insert-side-by-side-columns",
-    name: "Insert side-by-side block with a chosen number of columns",
+    name: "Side-by-side, n columns…",
+    // The same family as the one above, for the one that can produce more
+    // than two.
+    icon: "layout-grid",
     run: (editor, plugin) =>
       new ColumnCountModal(plugin.app, (columns) => insertSideBySide(editor, columns)).open(),
   },
   {
     id: "insert-fragment",
-    name: "Insert fragment marker",
+    name: "Fragment marker",
+    // A fragment means nothing outside a deck, so the icon says deck.
+    icon: "presentation",
     run: (editor) => insertFragment(editor),
   },
   {
     id: "insert-sections-per-name",
-    name: "Insert a restricted section for each name",
+    name: "Restricted section per name…",
+    // It is about who there is.
+    icon: "users",
     run: (editor, plugin) =>
       new NameListModal(
         plugin.app,
@@ -1333,7 +1445,9 @@ const AUTHORING_COMMANDS: AuthoringCommand[] = [
   },
   {
     id: "restrict-selection",
-    name: "Restrict the selection to named readers",
+    name: "Restrict selection…",
+    // It is about what is closed.
+    icon: "lock",
     run: (editor, plugin) =>
       new NameListModal(plugin.app, "Restrict what is selected to", (entries) =>
         restrictSelection(editor, entries)
