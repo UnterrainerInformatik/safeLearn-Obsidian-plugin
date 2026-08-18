@@ -1487,7 +1487,15 @@ class ColumnCountModal extends Modal {
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") confirm();
     });
-    contentEl.createEl("button", { text: "Insert" }).addEventListener("click", confirm);
+
+    // The confirmation stands in the container Obsidian lays dialog buttons out
+    // in, rather than against the lower edge of the field. What separates the two
+    // is then the spacing of the theme in use, and there is no length written
+    // here for a theme to disagree with.
+    contentEl
+      .createEl("div", { cls: "modal-button-container" })
+      .createEl("button", { text: "Insert" })
+      .addEventListener("click", confirm);
 
     input.focus();
     input.select();
@@ -1632,7 +1640,13 @@ class NameListModal extends Modal {
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) confirm();
     });
-    contentEl.createEl("button", { text: "Insert" }).addEventListener("click", confirm);
+
+    // The confirmation in its container, as in `ColumnCountModal`: the two
+    // dialogs differ in the field they carry and in nothing else.
+    contentEl
+      .createEl("div", { cls: "modal-button-container" })
+      .createEl("button", { text: "Insert" })
+      .addEventListener("click", confirm);
 
     input.focus();
   }
