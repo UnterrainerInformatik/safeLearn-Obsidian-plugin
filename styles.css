@@ -483,6 +483,58 @@
 }
 
 /*
+ * The login's state, in the two places a person reads it.
+ *
+ * Drawn from Obsidian's own variables rather than from this file's palette
+ * below. That palette exists for the markings inside a document, which have to
+ * say the same thing whatever theme somebody installs, and it is worth two
+ * blocks and a set of hand-picked hues for exactly that reason. This is chrome:
+ * a status-bar item that ignored the theme it sits in among Obsidian's own
+ * items is the thing that would look broken. It also settles the light and the
+ * dark theme in one place instead of two.
+ *
+ * Three of the five states are drawn in the ordinary status-bar colour and are
+ * not listed: being logged in is the state this is all for, and colouring the
+ * expected case is how a colour stops meaning anything.
+ */
+.safelearn-login-status {
+  cursor: pointer;
+}
+
+.safelearn-login-status[data-safelearn-login-state="logged-out"],
+.safelearn-login-status[data-safelearn-login-state="logging-in"] {
+  color: var(--text-muted);
+}
+
+.safelearn-login-status[data-safelearn-login-state="logged-in-without-role"] {
+  color: var(--text-warning);
+}
+
+.safelearn-login-status[data-safelearn-login-state="login-failed"] {
+  color: var(--text-error);
+}
+
+/*
+ * The same three states in the settings tab, where the description is not a
+ * label but the cause and what to do about it - two or three lines of prose,
+ * and the only place either is written down at full length.
+ */
+.safelearn-login-setting[data-safelearn-login-state="logged-in-without-role"] .setting-item-description,
+.safelearn-login-setting[data-safelearn-login-state="login-failed"] .setting-item-description {
+  color: var(--text-warning);
+}
+
+.safelearn-login-setting[data-safelearn-login-state="login-failed"] .setting-item-description {
+  color: var(--text-error);
+}
+
+/* Three buttons stand here in one state, and the row they are in is not built for three. */
+.safelearn-login-setting .setting-item-control {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/*
  * Light Theme
  *
  * A directive gating the whole file and a directive gating one block are drawn
