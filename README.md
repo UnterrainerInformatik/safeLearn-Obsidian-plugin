@@ -68,7 +68,9 @@ Five names are reserved (`admin`, `teacher`, `teachers`, `student`, `students`):
 
 ### Picking names from the directory
 
-*Restricted section per name…* and *Restrict selection…* both open the same dialog, and where a safeLearn instance is configured and you are logged in, that dialog gains a search field and a class dropdown above the text area. Typing there searches the school directory; picking a result adds it as a new line, exactly as if you had typed it. Typing or pasting a list still works exactly as before, before or after using the picker, and stays the *only* way to name someone the directory has no entry for — a guest, or a student not yet enrolled.
+*Restricted section per name…* and *Restrict selection…* both open the same dialog, and where a safeLearn instance is configured and you are logged in, that dialog gains a search field, a searchable class filter and a results list above the text area. Typing in the search field searches the school directory; typing in the class filter narrows a list of classes to check, and checking more than one shows matches from any of them. Check as many results as you like and click **Add selected** to add them all as new lines in one action, exactly as if you had typed them. Typing or pasting a list still works exactly as before, before or after using the picker, and stays the *only* way to name someone the directory has no entry for — a guest, or a student not yet enrolled.
+
+If the directory cannot be reached, or a search fails on the server, this is shown above the search field as soon as it happens rather than looking like an empty match.
 
 With no instance configured, or with one configured but not logged in, this dialog is unchanged: no search field, no network activity.
 

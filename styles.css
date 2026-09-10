@@ -449,22 +449,49 @@
  */
 .safelearn-directory-search {
   display: flex;
+  flex-direction: column;
   gap: 8px;
   margin-bottom: 8px;
 }
 
-.safelearn-directory-search-query {
-  flex: 1 1 auto;
+/* Hidden (`el.hidden`) while the directory is reachable or a request was
+   refused - shown only for "unreachable" and "failed". */
+.safelearn-directory-status {
+  color: var(--text-error);
+  font-size: 0.85em;
 }
 
+.safelearn-directory-search-query,
 .safelearn-directory-class-filter {
-  flex: 0 0 auto;
+  width: 100%;
+}
+
+.safelearn-directory-class-options {
+  max-height: 96px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+}
+
+.safelearn-directory-class-options:empty {
+  display: none;
+}
+
+.safelearn-directory-class-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.safelearn-directory-class-option:hover {
+  background-color: var(--background-modifier-hover);
 }
 
 .safelearn-directory-results {
   max-height: 160px;
   overflow-y: auto;
-  margin-bottom: 8px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s, 4px);
 }
@@ -474,11 +501,31 @@
 }
 
 .safelearn-directory-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 4px 8px;
   cursor: pointer;
 }
 
 .safelearn-directory-result:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+/* A plain clickable `<div>`, styled to read as actionable without being a
+   `<button>` - `design.md`, "Results: checkboxes plus one non-`<button>`
+   'Add selected' control". */
+.safelearn-directory-add-selected {
+  margin-bottom: 8px;
+  padding: 4px 8px;
+  text-align: center;
+  color: var(--interactive-accent);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  cursor: pointer;
+}
+
+.safelearn-directory-add-selected:hover {
   background-color: var(--background-modifier-hover);
 }
 

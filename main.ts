@@ -82,6 +82,20 @@ interface DirectoryEntry {
   roles: Record<string, boolean>;
 }
 
+/**
+ * What a directory search came back with, distinguishing the three ways it
+ * can fail to reach `entries` from an actual, empty match: `"unreachable"` (a
+ * `requestUrl` exception - no route to the instance at all), `"refused"` (a
+ * `403`, deliberately shown identically to not being logged in, per
+ * `plugin-login-state`'s existing boundary - unchanged here), and `"failed"`
+ * (any other `>=400`, chiefly the `502` a Keycloak-side failure raises).
+ * `entries` is populated only for `"ok"`.
+ */
+interface DirectorySearchResult {
+  outcome: "ok" | "unreachable" | "failed" | "refused";
+  entries: DirectoryEntry[];
+}
+
 /** The five role/group values that mean "everyone holding this role", not a class. Mirrors `NAMES_RESERVED_FOR_ROLES`, lowercased. */
 const ROLE_MARKERS = new Set(["teacher", "teachers", "student", "students", "admin"]);
 
@@ -447,39 +461,61 @@ export default class SafeLearnPlugin extends Plugin {
    *
    * A refusal from the endpoint - no token, an expired one, or a caller
    * lacking teacher/admin - is deliberately undifferentiated here from not
-   * being logged in at all (`tasks.md` #3.2): this returns `[]` rather than
-   * surfacing the server's response.
+   * being logged in at all (`tasks.md` #3.2 of `plugin-admin-directory-ui`):
+   * both come back as `"refused"`, which the caller renders exactly as an
+   * absent picker would, nothing shown. An instance that could not be reached
+   * at all and a request the server itself failed on are told apart from that
+   * and from each other - `design.md`'s "`searchDirectory` reports an
+   * outcome, not just a result list".
    */
-  async searchDirectory(query: string): Promise<DirectoryEntry[]> {
+  async searchDirectory(query: string): Promise<DirectorySearchResult> {
     const instanceUrl = this.instanceUrl();
-    if (!instanceUrl) return [];
+    if (!instanceUrl) return { outcome: "refused", entries: [] };
 
     const token = await this.ensureAccessToken();
-    if (!token) return [];
+    if (!token) return { outcome: "refused", entries: [] };
 
     const url = `${stripTrailingSlash(instanceUrl)}/api/admin/directory/search?q=${encodeURIComponent(query)}`;
-    const response = await requestUrl({
-      url,
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-      throw: false,
-    });
-    if (response.status >= 400) return [];
+    let response;
+    try {
+      response = await requestUrl({
+        url,
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        throw: false,
+      });
+    } catch {
+      return { outcome: "unreachable", entries: [] };
+    }
+    if (response.status === 403) return { outcome: "refused", entries: [] };
+    if (response.status >= 400) return { outcome: "failed", entries: [] };
 
     const body = response.json;
-    if (!Array.isArray(body)) return [];
-    return body.map((entry) => ({ name: String(entry?.name ?? ""), roles: entry?.roles ?? {} }));
+    if (!Array.isArray(body)) return { outcome: "failed", entries: [] };
+    return {
+      outcome: "ok",
+      entries: body.map((entry) => ({ name: String(entry?.name ?? ""), roles: entry?.roles ?? {} })),
+    };
   }
 
   /** Every class-like value the directory currently holds - the one fetch both "list classes" (6) and the class dropdown (7.2) build on. */
-  async classLikeValues(): Promise<string[]> {
-    return classLikeValues(await this.searchDirectory(""));
+  async classLikeValues(): Promise<{ outcome: DirectorySearchResult["outcome"]; classes: string[] }> {
+    const { outcome, entries } = await this.searchDirectory("");
+    return { outcome, classes: outcome === "ok" ? classLikeValues(entries) : [] };
   }
 
   // ################### "List classes" command (6) ###################
 
   private async listClasses() {
-    const classes = await this.classLikeValues();
+    const { outcome, classes } = await this.classLikeValues();
+    if (outcome === "unreachable") {
+      new Notice("The directory could not be reached.", 0);
+      return;
+    }
+    if (outcome === "failed" || outcome === "refused") {
+      new Notice("The directory search failed.", 0);
+      return;
+    }
     new Notice(
       classes.length > 0
         ? `Classes in the directory: ${classes.join(", ")}`
@@ -2274,27 +2310,79 @@ class NameListModal extends Modal {
   }
 
   /**
-   * The search input, the class-filter dropdown, and the results list -
-   * everything above the textarea.
+   * The reachability status line, the search input, the searchable class
+   * filter, the results list and its "Add selected" control - everything
+   * above the textarea.
    *
    * Nothing here is a `<button>`: `answerNameList` and `dialogBoxes`
    * (`test/obsidian/harness.js`) find the field and the confirmation by
    * querying the modal for its first input/textarea and its first button,
-   * and a button here would be found first and break both.
+   * and a button here would be found first and break both. `.safelearn-directory-result`
+   * and the "Add selected" control follow the same clickable-`<div>` pattern
+   * for the same reason.
    */
   private async buildDirectorySearch(contentEl: HTMLElement, appendName: (name: string) => void) {
     const container = contentEl.createDiv({ cls: "safelearn-directory-search" });
+
+    // Hidden while the directory is reachable or the request was refused (the
+    // same silence `plugin-login-state` already gives a refusal) - shown only
+    // for "unreachable" and "failed". `design.md` - "The status line is a
+    // plain element, not a `<button>`".
+    const status = container.createDiv({ cls: "safelearn-directory-status" });
+    status.hidden = true;
 
     const query = container.createEl("input", { type: "text", cls: "safelearn-directory-search-query" });
     query.placeholder = "Search the directory…";
     query.style.width = "100%";
 
-    const filter = container.createEl("select", { cls: "safelearn-directory-class-filter" });
-    filter.createEl("option", { text: "All classes", value: "" });
+    // A text input narrowing a checkbox list, replacing the old `<select>` -
+    // `design.md` - "Class filter: a text input narrows a checkbox list".
+    const classFilterQuery = container.createEl("input", {
+      type: "text",
+      cls: "safelearn-directory-class-filter",
+    });
+    classFilterQuery.placeholder = "Filter classes…";
+    classFilterQuery.style.width = "100%";
+
+    const classOptions = container.createDiv({ cls: "safelearn-directory-class-options" });
 
     const results = contentEl.createDiv({ cls: "safelearn-directory-results" });
 
+    // A plain clickable `<div>`, following `.safelearn-directory-result`'s own
+    // pattern - never a `<button>`. `design.md` - "Results: checkboxes plus
+    // one non-`<button>` 'Add selected' control".
+    const addSelected = contentEl.createDiv({ cls: "safelearn-directory-add-selected" });
+    addSelected.setText("Add selected");
+
+    // The full, unfiltered set of class names from the one `classLikeValues()`
+    // fetch below - `classFilterQuery` narrows what is *shown*, it does not
+    // re-fetch (`tasks.md` #3.2).
+    let allClasses: string[] = [];
+    // Which classes are currently checked, surviving a re-render of the
+    // checkbox list itself (`tasks.md` #3.4).
+    const checkedClasses = new Set<string>();
+    // Which rendered results are currently checked, keyed by display name so
+    // a re-render from a new search preserves a name marked-but-not-yet-added
+    // rather than silently dropping it - `design.md`, Risks.
+    const checkedResultNames = new Set<string>();
+    // What the results list currently shows, so "Add selected" can re-render
+    // it (with the checked set cleared) without re-running a search.
+    let lastEntries: DirectoryEntry[] = [];
+
+    const setStatus = (outcome: DirectorySearchResult["outcome"]) => {
+      if (outcome === "unreachable") {
+        status.setText("The directory could not be reached.");
+        status.hidden = false;
+      } else if (outcome === "failed") {
+        status.setText("The directory search failed.");
+        status.hidden = false;
+      } else {
+        status.hidden = true;
+      }
+    };
+
     const renderResults = (entries: DirectoryEntry[]) => {
+      lastEntries = entries;
       results.empty();
       for (const entry of entries) {
         const item = results.createDiv({ cls: "safelearn-directory-result" });
@@ -2302,28 +2390,101 @@ class NameListModal extends Modal {
         // to find a specific match without depending on how the roles beside
         // it are formatted for reading.
         item.setAttribute("data-safelearn-name", entry.name);
-        item.setText(`${entry.name} — ${Object.keys(entry.roles).join(", ") || "no roles"}`);
-        item.addEventListener("click", () => appendName(entry.name));
+
+        const checkbox = item.createEl("input", {
+          type: "checkbox",
+          cls: "safelearn-directory-result-checkbox",
+        });
+        checkbox.checked = checkedResultNames.has(entry.name);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) checkedResultNames.add(entry.name);
+          else checkedResultNames.delete(entry.name);
+        });
+
+        item.createSpan({ text: `${entry.name} — ${Object.keys(entry.roles).join(", ") || "no roles"}` });
+
+        // Check-to-mark, replacing the old click-to-append: a click anywhere
+        // on the row but the checkbox itself flips it, so the row stays one
+        // click no matter where on it a person clicks.
+        item.addEventListener("click", (event) => {
+          if (event.target === checkbox) return;
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event("change"));
+        });
+      }
+    };
+
+    const renderClassOptions = () => {
+      const typed = classFilterQuery.value.trim().toLowerCase();
+      const shown =
+        typed === "" ? allClasses : allClasses.filter((value) => value.toLowerCase().includes(typed));
+      classOptions.empty();
+      for (const value of shown) {
+        const row = classOptions.createDiv({ cls: "safelearn-directory-class-option" });
+        const checkbox = row.createEl("input", {
+          type: "checkbox",
+          cls: "safelearn-directory-class-option-checkbox",
+        });
+        checkbox.checked = checkedClasses.has(value);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) checkedClasses.add(value);
+          else checkedClasses.delete(value);
+          void runSearch();
+        });
+        row.createSpan({ text: value });
+        row.addEventListener("click", (event) => {
+          if (event.target === checkbox) return;
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event("change"));
+        });
       }
     };
 
     // The server takes one query, matched against a name or a role/group -
     // there is no combined "text AND class" query to send. So a class filter
-    // narrows whatever the text query (or, with none typed, the class value
+    // narrows whatever the text query (or, with none typed, the class name
     // itself) came back with, client-side.
+    const searchOneClass = async (text: string, className: string): Promise<DirectorySearchResult> => {
+      const result = await this.plugin.searchDirectory(text !== "" ? text : className);
+      if (result.outcome !== "ok" || className === "") return result;
+      return {
+        outcome: "ok",
+        entries: result.entries.filter((entry) => Object.keys(entry.roles).includes(className)),
+      };
+    };
+
+    const outcomeRank: Record<DirectorySearchResult["outcome"], number> = {
+      ok: 0,
+      refused: 1,
+      failed: 2,
+      unreachable: 3,
+    };
+
+    // One `searchDirectory` call per checked class, unioned and de-duplicated
+    // by name (`proposal.md`'s decided client-merge approach); with none
+    // checked, today's "no class filter" behavior - a single call for the
+    // text query, or the whole directory when that is also empty.
     const runSearch = async () => {
       const text = query.value.trim();
-      const selectedClass = filter.value;
-      if (text === "" && selectedClass === "") {
-        results.empty();
-        return;
+      const classes = checkedClasses.size > 0 ? [...checkedClasses] : [""];
+
+      const outcomes = await Promise.all(classes.map((className) => searchOneClass(text, className)));
+      const outcome = outcomes.reduce(
+        (worst, current) => (outcomeRank[current.outcome] > outcomeRank[worst] ? current.outcome : worst),
+        "ok" as DirectorySearchResult["outcome"]
+      );
+      setStatus(outcome);
+
+      // An unreachable instance or a failed request is additive information,
+      // not a wipe of what an earlier, successful search already found -
+      // `tasks.md` #2.4.
+      if (outcome === "unreachable" || outcome === "failed") return;
+
+      const merged = new Map<string, DirectoryEntry>();
+      if (outcome === "ok") {
+        for (const oneClass of outcomes) for (const entry of oneClass.entries) merged.set(entry.name, entry);
       }
-      const entries = await this.plugin.searchDirectory(text !== "" ? text : selectedClass);
-      const matches =
-        selectedClass === ""
-          ? entries
-          : entries.filter((entry) => Object.keys(entry.roles).includes(selectedClass));
-      renderResults(matches);
+      renderResults([...merged.values()]);
     };
 
     let debounceHandle: number | undefined;
@@ -2331,10 +2492,26 @@ class NameListModal extends Modal {
       window.clearTimeout(debounceHandle);
       debounceHandle = window.setTimeout(() => void runSearch(), 300);
     });
-    filter.addEventListener("change", () => void runSearch());
 
-    // Fetched once per modal open, not per keystroke - see `tasks.md` #7.2.
-    for (const value of await this.plugin.classLikeValues()) filter.createEl("option", { text: value, value });
+    let classFilterDebounceHandle: number | undefined;
+    classFilterQuery.addEventListener("input", () => {
+      window.clearTimeout(classFilterDebounceHandle);
+      classFilterDebounceHandle = window.setTimeout(() => renderClassOptions(), 300);
+    });
+
+    addSelected.addEventListener("click", () => {
+      for (const name of checkedResultNames) appendName(name);
+      checkedResultNames.clear();
+      renderResults(lastEntries);
+    });
+
+    // Fetched once per modal open, not per keystroke - see `tasks.md` #7.2 of
+    // the prior change. The one fetch the reachability signal piggybacks on -
+    // `design.md` - no second request is added for it.
+    const { outcome, classes } = await this.plugin.classLikeValues();
+    allClasses = classes;
+    setStatus(outcome);
+    renderClassOptions();
   }
 
   onClose() {
