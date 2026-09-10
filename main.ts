@@ -104,13 +104,6 @@ const DEFAULT_DATA: SafeLearnPluginData = {
  */
 const DIRECTORY_CLIENT_ID = "safelearn-plugin";
 
-/**
- * The safeLearn server's own Keycloak client id (`keycloak.json`'s `resource`) -
- * where an access token's `resource_access` nests the roles `utils.js` reads
- * server-side. Also this project's own fixed convention, not a setting.
- */
-const SERVER_CLIENT_ID = "safeLearn";
-
 /** A person the directory has an entry for: what the search endpoint hands back, and nothing else. */
 interface DirectoryEntry {
   name: string;
@@ -187,14 +180,32 @@ async function pkceChallenge(verifier: string): Promise<string> {
 /**
  * The access token's own `resource_access[resource].roles`, read locally from its
  * unverified payload - the same claim `utils.js`'s `getClientRoles` reads server-side
- * off `keycloakConfig.resource` (`safeLearn`). Never used to establish trust (the
- * server still checks the token itself on every call); only to tell a person, from
- * their own already-issued token, whether the directory endpoint's teacher-or-admin
- * gate will let them through - the endpoint's own refusal does not say why, on purpose.
+ * off `keycloakConfig.resource`. That id is a deployment's own Keycloak client name,
+ * not this project's fixed convention (a fork's server is commonly registered under
+ * its own name), so the caller passes the token's own `azp` rather than a literal.
+ * Never used to establish trust (the server still checks the token itself on every
+ * call); only to tell a person, from their own already-issued token, whether the
+ * directory endpoint's teacher-or-admin gate will let them through - the endpoint's
+ * own refusal does not say why, on purpose.
  */
 function accessTokenResourceRoles(token: string, resource: string): string[] {
   const roles = accessTokenPayload(token)?.resource_access?.[resource]?.roles;
   return Array.isArray(roles) ? roles : [];
+}
+
+/**
+ * Mirrors `deriveRoles` in the server's `keycloak-middleware.js`: whether the
+ * `ldap` claim's `OU=...` segments include a teacher or admin group, applying
+ * the same `teachers` -> `teacher` alias.
+ */
+function ldapCarriesTeacherOrAdmin(ldap: unknown): boolean {
+  if (typeof ldap !== "string") return false;
+  const matches = ldap.match(/OU=[^,]*/gi);
+  if (!matches) return false;
+  return matches.some((match) => {
+    const value = match.replace(/^OU=/i, "").trim().toLowerCase();
+    return value === "teacher" || value === "teachers" || value === "admin";
+  });
 }
 
 /**
@@ -672,11 +683,20 @@ export default class SafeLearnPlugin extends Plugin {
    * this, since the endpoint's own refusal already collapses "no role" into the same
    * response as "not logged in" (`app.js`), and every other feature must keep doing
    * the same rather than being able to tell the two apart from a failed call.
+   *
+   * Mirrors `verifyCallerIdentity` in the server's `directory-service.js`, which
+   * merges the same two sources: the client roles nested under the token's own
+   * `azp` in `resource_access`, and the LDAP claim's `OU=...` groups.
    */
   hasDirectoryRole(): boolean {
     if (!this.accessToken) return false;
-    const roles = accessTokenResourceRoles(this.accessToken, SERVER_CLIENT_ID);
-    return roles.includes("teacher") || roles.includes("teachers") || roles.includes("admin");
+    const payload = accessTokenPayload(this.accessToken);
+    const resource = typeof payload?.azp === "string" ? payload.azp : null;
+    const roles = resource ? accessTokenResourceRoles(this.accessToken, resource) : [];
+    if (roles.includes("teacher") || roles.includes("teachers") || roles.includes("admin")) {
+      return true;
+    }
+    return ldapCarriesTeacherOrAdmin(payload?.ldap);
   }
 
   /**
