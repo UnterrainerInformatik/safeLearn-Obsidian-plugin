@@ -529,6 +529,21 @@
   background-color: var(--background-modifier-hover);
 }
 
+/* `DirectoryInfoModal`'s "Teachers" and "Classes" sections - a plain list,
+   scrollable rather than growing the modal without bound for a large
+   directory (`design.md` of `plugin-directory-info-page`, Risks). */
+.safelearn-directory-info-list {
+  max-height: 120px;
+  overflow-y: auto;
+  margin: 0 0 8px;
+  padding-left: 1.5em;
+}
+
+.safelearn-directory-info-user-detail {
+  margin-top: 8px;
+  color: var(--text-muted);
+}
+
 /*
  * The login's state, in the two places a person reads it.
  *

@@ -80,6 +80,7 @@ interface SafeLearnPluginData {
   instanceUrl: string;
   keycloakUrl: string;
   realm: string;
+  serverClientId: string;
   refreshToken: string | null;
   refreshTokenLifetimeSeconds: number;
 }
@@ -88,6 +89,11 @@ const DEFAULT_DATA: SafeLearnPluginData = {
   instanceUrl: "",
   keycloakUrl: "https://auth.unterrainer.info/",
   realm: "safeLearn",
+  // The safeLearn server's own Keycloak client id (its `keycloak.json`'s
+  // `resource`), not this plugin's - see `DIRECTORY_CLIENT_ID` and
+  // `hasDirectoryRole`. Deployment-specific like `keycloakUrl`/`realm` above;
+  // defaulted to this project's own convention.
+  serverClientId: "safeLearn",
   refreshToken: null,
   // Keycloak's own default for SSO Session Idle, which is what
   // `refresh_expires_in` follows out of the box. It is a seed and not a
@@ -479,13 +485,13 @@ function loginStateInBrief(state: LoginState): string {
 function loginStateInFull(state: LoginState): string {
   switch (state.name) {
     case "logged-out":
-      return 'Log in to use the directory picker and "List classes".';
+      return 'Log in to use the directory picker, "List classes" and "Show directory info".';
     case "logging-in":
       return `${loginStateSentence(state)} The browser has the rest of it; this comes back on its own when it does.`;
     case "logged-in":
-      return `${loginStateSentence(state)} The directory picker and "List classes" are available.`;
+      return `${loginStateSentence(state)} The directory picker, "List classes" and "Show directory info" are available.`;
     case "logged-in-without-role":
-      return `${loginStateSentence(state)} The directory picker and "List classes" will stay empty. Ask whoever administers the realm to grant one, or log in as a different account.`;
+      return `${loginStateSentence(state)} The directory picker, "List classes" and "Show directory info" will stay empty. Ask whoever administers the realm to grant one, or log in as a different account.`;
     case "login-failed":
       return `${loginStateName(state)}. ${causeWithRemedy(state.cause)}`;
   }
@@ -612,6 +618,20 @@ export default class SafeLearnPlugin extends Plugin {
       },
     });
 
+    // Gated on `hasDirectoryRole()`, not just `hasLogin()` like "List classes"
+    // above: the view's whole point is a teacher/admin overview, so it stays
+    // out of the palette for the same two cases `plugin-directory-info-view`
+    // names - no connection held, and one held without the role.
+    this.addCommand({
+      id: "show-directory-info",
+      name: "Show directory info",
+      checkCallback: (checking) => {
+        if (!this.hasDirectoryRole()) return false;
+        if (!checking) new DirectoryInfoModal(this).open();
+        return true;
+      },
+    });
+
     // A login in progress ends itself when its lifetime passes, on a timer
     // rather than on the next read of the state: a status-bar item that only
     // corrects itself when somebody opens the settings is the same defect
@@ -653,6 +673,11 @@ export default class SafeLearnPlugin extends Plugin {
     return trimmed === "" ? DEFAULT_DATA.realm : trimmed;
   }
 
+  private serverClientId(): string {
+    const trimmed = this.data.serverClientId.trim();
+    return trimmed === "" ? DEFAULT_DATA.serverClientId : trimmed;
+  }
+
   private authorizationEndpoint(): string {
     return `${stripTrailingSlash(this.keycloakUrl())}/realms/${this.realm()}/protocol/openid-connect/auth`;
   }
@@ -685,14 +710,16 @@ export default class SafeLearnPlugin extends Plugin {
    * the same rather than being able to tell the two apart from a failed call.
    *
    * Mirrors `verifyCallerIdentity` in the server's `directory-service.js`, which
-   * merges the same two sources: the client roles nested under the token's own
-   * `azp` in `resource_access`, and the LDAP claim's `OU=...` groups.
+   * merges the same two sources: the client roles nested under the configured
+   * `serverClientId` setting in `resource_access`, and the LDAP claim's `OU=...`
+   * groups. The client-role check reads that setting, never the token's own
+   * `azp` - `azp` is always this plugin's own client (`DIRECTORY_CLIENT_ID`),
+   * which by design never carries client roles of its own.
    */
   hasDirectoryRole(): boolean {
     if (!this.accessToken) return false;
     const payload = accessTokenPayload(this.accessToken);
-    const resource = typeof payload?.azp === "string" ? payload.azp : null;
-    const roles = resource ? accessTokenResourceRoles(this.accessToken, resource) : [];
+    const roles = accessTokenResourceRoles(this.accessToken, this.serverClientId());
     if (roles.includes("teacher") || roles.includes("teachers") || roles.includes("admin")) {
       return true;
     }
@@ -1293,6 +1320,23 @@ class SafeLearnSettingTab extends PluginSettingTab {
           .setValue(this.plugin.data.realm)
           .onChange(async (value) => {
             this.plugin.data.realm = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Server client id")
+      .setDesc(
+        "The Keycloak client id your safeLearn server itself is registered under " +
+          "(its own keycloak.json's \"resource\") - not this plugin's client id. " +
+          "Only affects the Login status shown below, never what the server itself authorizes."
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder(DEFAULT_DATA.serverClientId)
+          .setValue(this.plugin.data.serverClientId)
+          .onChange(async (value) => {
+            this.plugin.data.serverClientId = value;
             await this.plugin.saveSettings();
           })
       );
@@ -3236,6 +3280,99 @@ class NameListModal extends Modal {
     allClasses = classes;
     setStatus(outcome);
     renderClassOptions();
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+/** Whether a directory entry's role/group set holds the teacher or admin role - the same three values `hasDirectoryRole()` checks on the held token. */
+function entryHoldsTeacherOrAdmin(entry: DirectoryEntry): boolean {
+  const roles = Object.keys(entry.roles).map((role) => role.toLowerCase());
+  return roles.includes("teacher") || roles.includes("teachers") || roles.includes("admin");
+}
+
+/**
+ * A read-only, point-in-time overview of the whole directory - every teacher,
+ * every class, and a per-user role lookup - all derived from one
+ * `searchDirectory("")` fetch made when the modal opens. See `design.md` of
+ * `plugin-directory-info-page` for why this stays a `Modal` rather than a
+ * persistent view, and why the user search filters the already-held entries
+ * client-side instead of re-querying per keystroke like `NameListModal` does.
+ *
+ * Nothing here writes anything - not to the vault, not to the safeLearn
+ * server, not to Keycloak. The one fetch is the whole of what this modal asks
+ * of anything outside itself.
+ */
+class DirectoryInfoModal extends Modal {
+  constructor(private readonly plugin: SafeLearnPlugin) {
+    super(plugin.app);
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Directory info" });
+
+    // Shown only for a non-`ok` outcome, exactly as `NameListModal`'s own
+    // directory status line - `design.md`, "Outcome handling reuses
+    // `buildDirectorySearch`'s status-line pattern".
+    const status = contentEl.createDiv({ cls: "safelearn-directory-status" });
+    status.hidden = true;
+
+    contentEl.createEl("h4", { text: "Teachers" });
+    const teachers = contentEl.createEl("ul", { cls: "safelearn-directory-info-list" });
+
+    contentEl.createEl("h4", { text: "Classes" });
+    const classes = contentEl.createEl("ul", { cls: "safelearn-directory-info-list" });
+
+    contentEl.createEl("h4", { text: "Users" });
+    const query = contentEl.createEl("input", { type: "text", cls: "safelearn-directory-search-query" });
+    query.placeholder = "Search users…";
+    query.style.width = "100%";
+    // A plain clickable `<div>`, never a `<button>` - `NameListModal`'s own
+    // convention (`tasks.md` #3.4), so the test harness's generic first-button
+    // lookup stays unambiguous here too.
+    const results = contentEl.createDiv({ cls: "safelearn-directory-results" });
+    const detail = contentEl.createDiv({ cls: "safelearn-directory-info-user-detail" });
+
+    let entries: DirectoryEntry[] = [];
+
+    const renderResults = (matches: DirectoryEntry[]) => {
+      results.empty();
+      for (const entry of matches) {
+        const item = results.createDiv({ cls: "safelearn-directory-result" });
+        item.setText(entry.name);
+        item.addEventListener("click", () => {
+          detail.setText(`${entry.name} — ${Object.keys(entry.roles).join(", ") || "no roles"}`);
+        });
+      }
+    };
+
+    query.addEventListener("input", () => {
+      const typed = query.value.trim().toLowerCase();
+      const matches = typed === "" ? entries : entries.filter((entry) => entry.name.toLowerCase().includes(typed));
+      renderResults(matches);
+    });
+
+    const { outcome, entries: fetched } = await this.plugin.searchDirectory("");
+    if (outcome === "unreachable") {
+      status.setText("The directory could not be reached.");
+      status.hidden = false;
+    } else if (outcome === "failed" || outcome === "refused") {
+      status.setText("The directory search failed.");
+      status.hidden = false;
+    } else {
+      entries = fetched;
+    }
+
+    for (const entry of entries.filter(entryHoldsTeacherOrAdmin)) {
+      teachers.createEl("li", { text: entry.name });
+    }
+    for (const value of classLikeValues(entries)) {
+      classes.createEl("li", { text: value });
+    }
+    renderResults(entries);
   }
 
   onClose() {
