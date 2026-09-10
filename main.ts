@@ -35,6 +35,27 @@ declare module "obsidian" {
   }
 }
 
+/**
+ * `App.setting` is the settings window, which Obsidian has and does not publish.
+ *
+ * The status-bar item this change adds opens the plugin's own settings when
+ * clicked, because every remedy the settings tab names is in the settings tab -
+ * and there is no published way to ask for that. `app.setting.open()` followed
+ * by `openTabById(id)` is what Obsidian's own "Options" entry does, and what
+ * `test/obsidian/harness.js` already drives to open this very tab. Declared
+ * here for the same reason `MenuItem.setSubmenu` is, and with the same
+ * consequence: if a later `obsidian` package declares it, this merges or fails
+ * to compile, and either is better than an `as any` at the call site.
+ */
+declare module "obsidian" {
+  interface App {
+    setting: {
+      open(): void;
+      openTabById(id: string): void;
+    };
+  }
+}
+
 // ################### Directory login: data, PKCE and the class heuristic ###################
 
 /**
@@ -47,12 +68,20 @@ declare module "obsidian" {
  * point at a Keycloak of its own - so they are settings, each defaulted to
  * this project's shared identity provider, the same default/override shape
  * `docs-testing.md` already uses for `SAFELEARN_TEST_IDP_URL`/`SAFELEARN_TEST_REALM`.
+ *
+ * `refreshTokenLifetimeSeconds` is the realm's own answer to how long a refresh
+ * token lives - `refresh_expires_in`, which Keycloak sends with every
+ * successful exchange and which this plugin used to drop. It is kept because a
+ * login in progress is given exactly that long to conclude (`design.md`): the
+ * realm already knows the figure, so a constant in the source would be a second
+ * copy of it, free to be wrong on every deployment that is not this one.
  */
 interface SafeLearnPluginData {
   instanceUrl: string;
   keycloakUrl: string;
   realm: string;
   refreshToken: string | null;
+  refreshTokenLifetimeSeconds: number;
 }
 
 const DEFAULT_DATA: SafeLearnPluginData = {
@@ -60,6 +89,12 @@ const DEFAULT_DATA: SafeLearnPluginData = {
   keycloakUrl: "https://auth.unterrainer.info/",
   realm: "safeLearn",
   refreshToken: null,
+  // Keycloak's own default for SSO Session Idle, which is what
+  // `refresh_expires_in` follows out of the box. It is a seed and not a
+  // setting: the first successful exchange replaces it with what the realm
+  // actually answered, and a wrong seed costs exactly one attempt, since it
+  // decides only how long the very first login waits before giving up.
+  refreshTokenLifetimeSeconds: 30 * 60,
 };
 
 /**
@@ -158,17 +193,290 @@ async function pkceChallenge(verifier: string): Promise<string> {
  * gate will let them through - the endpoint's own refusal does not say why, on purpose.
  */
 function accessTokenResourceRoles(token: string, resource: string): string[] {
+  const roles = accessTokenPayload(token)?.resource_access?.[resource]?.roles;
+  return Array.isArray(roles) ? roles : [];
+}
+
+/**
+ * An access token's own payload, decoded locally and never verified.
+ *
+ * Two questions are asked of it - which roles it carries and who it was issued
+ * for - and both are asked of a token this plugin already holds. Decoding it
+ * twice, in two places, would be two chances to get base64url padding wrong in
+ * only one of them. A token that is not a JWT at all is not an error here: it
+ * answers neither question, which is what `null` says.
+ */
+function accessTokenPayload(token: string): any | null {
   const parts = token.split(".");
-  if (parts.length < 2) return [];
+  if (parts.length < 2) return null;
   try {
     let base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const pad = base64.length % 4;
     if (pad) base64 += "=".repeat(4 - pad);
-    const payload = JSON.parse(atob(base64));
-    const roles = payload?.resource_access?.[resource]?.roles;
-    return Array.isArray(roles) ? roles : [];
+    return JSON.parse(atob(base64));
   } catch {
-    return [];
+    return null;
+  }
+}
+
+/**
+ * Who the held token says is logged in.
+ *
+ * `plugin-login-state` requires that either logged-in state names who is logged
+ * in, and this is the only place that could answer it without asking the server
+ * something. Keycloak always issues `preferred_username` and adds `name` where
+ * the account has one, so the first of those that is there is what a person
+ * would recognise as themselves. A token carrying none of them is not a state
+ * of its own: the login is held either way, and "logged in" without a name is
+ * the honest thing to show.
+ */
+function accessTokenAccountName(token: string): string | null {
+  const payload = accessTokenPayload(token);
+  for (const claim of [payload?.name, payload?.preferred_username, payload?.email]) {
+    if (typeof claim === "string" && claim.trim() !== "") return claim.trim();
+  }
+  return null;
+}
+
+// ################### The login's state, its causes and their words ###################
+
+/**
+ * Why a login ended without an identity, as a tag rather than as a sentence.
+ *
+ * Three surfaces show this at three lengths and a check asserts on it, and a
+ * sentence built where the failure happened can serve none of them: each
+ * surface wants a different length of it, and a check asserting on prose breaks
+ * on every rewording. So the failure travels as a tag and each surface renders
+ * it - see `design.md`.
+ *
+ * A cause is constructed only where the plugin observed the thing first-hand:
+ * the transport failure of its own request, the status its own request was
+ * answered with, the parameters a callback carried. Never from how the safeLearn
+ * server answered a directory call - `directory-search` makes "holds no
+ * identity" and "holds neither role" indistinguishable on purpose, and nothing
+ * here may become the side channel that tells them apart.
+ */
+type LoginFailure =
+  | { kind: "unreachable" }
+  | { kind: "endpoint-unresolvable" }
+  | { kind: "provider-refused"; status: number }
+  | { kind: "redirect-not-registered" }
+  | { kind: "no-code" }
+  | { kind: "no-callback" }
+  | { kind: "cancelled" }
+  | { kind: "another-window" }
+  | { kind: "no-longer-pending" };
+
+/**
+ * The five states of `plugin-login-state`, each carrying the particulars that
+ * tell one instance of it from another. Derived, never stored: a state written
+ * down at each transition is free to disagree with the tokens, and a surface
+ * showing a state that disagrees with what a call will do is the defect this
+ * change exists to repair, one level up.
+ */
+type LoginState =
+  | { name: "logged-out" }
+  | { name: "logging-in"; startedAt: number; instanceUrl: string | null }
+  | { name: "logged-in"; account: string | null }
+  | { name: "logged-in-without-role"; account: string | null }
+  | { name: "login-failed"; cause: LoginFailure };
+
+/** A login this instance started and is waiting on: what it needs to finish, and what it needs to be shown and to expire. */
+interface PendingLogin {
+  /** The PKCE verifier the exchange needs - `null` for the start-up restore, which has a refresh token instead and can complete no callback. */
+  verifier: string | null;
+  startedAt: number;
+  expiresAt: number;
+  instanceUrl: string | null;
+}
+
+/**
+ * How often a login in progress is checked for having passed its lifetime.
+ *
+ * A second is short enough that nobody watching the status bar sees a state
+ * that is no longer true, and cheap enough to be beneath notice: the check is a
+ * walk over a map that holds at most one entry.
+ */
+const EXPIRY_TICK_MS = 1000;
+
+/** How many concluded logins are remembered, which is only as many as could still have a callback in flight. */
+const CONCLUDED_LOGINS_KEPT = 20;
+
+/**
+ * An error carrying the cause a surface will render.
+ *
+ * The site that observes a failure is the only site that knows what it was, and
+ * it is several calls below the site that shows it. The alternative is a
+ * `console.error` and a caller left to guess, which is what this change is
+ * repairing. Not named `cause`: `Error` already has a property by that name.
+ */
+class LoginFailureError extends Error {
+  constructor(readonly failure: LoginFailure) {
+    super(causeAsSentence(failure));
+  }
+}
+
+/**
+ * The cause an exchange ended with.
+ *
+ * Everything below `applyTokenResponse` throws a `LoginFailureError`, so the
+ * fallback covers only something answering on the token endpoint's address that
+ * is not a token endpoint - a body that is not JSON, a field that is not there.
+ * That is what an unresolvable endpoint is, so it is what it is called.
+ */
+function failureOf(error: unknown): LoginFailure {
+  return error instanceof LoginFailureError ? error.failure : { kind: "endpoint-unresolvable" };
+}
+
+/**
+ * What a refusal from the token endpoint actually was, read off the answer to
+ * this plugin's own request and nothing else.
+ *
+ * A realm that is not there is not a refusal at all - Keycloak has no such path
+ * to serve and answers 404, and telling somebody the provider refused them when
+ * the realm name is misspelt sends them looking in the wrong place. A redirect
+ * address the client does not carry is refused with a 400 that names it in the
+ * body, and it earns its own cause because it is the one failure here that
+ * nobody fixes by logging in again.
+ *
+ * All of this is a fact of a request this plugin made. Nothing here reads or
+ * repeats how the safeLearn server answered anything.
+ */
+function refusalOf(status: number, body: string): LoginFailure {
+  if (status === 404) return { kind: "endpoint-unresolvable" };
+  if (/redirect_uri/i.test(body ?? "")) return { kind: "redirect-not-registered" };
+  return { kind: "provider-refused", status };
+}
+
+/** The five state names as a person reads them, without the particulars each one carries. */
+function loginStateName(state: LoginState): string {
+  switch (state.name) {
+    case "logged-out":
+      return "Not logged in";
+    case "logging-in":
+      return "Logging in…";
+    case "logged-in":
+      return "Logged in";
+    case "logged-in-without-role":
+      return "Logged in, no directory role";
+    case "login-failed":
+      return "Login failed";
+  }
+}
+
+/** A cause in the fewest words that still say which one it is - the status bar's length. */
+function causeInBrief(cause: LoginFailure): string {
+  switch (cause.kind) {
+    case "unreachable":
+      return "nothing answered";
+    case "endpoint-unresolvable":
+      return "no realm there";
+    case "provider-refused":
+      return `refused, status ${cause.status}`;
+    case "redirect-not-registered":
+      return "redirect not registered";
+    case "no-code":
+      return "no code came back";
+    case "no-callback":
+      return "nothing came back";
+    case "cancelled":
+      return "cancelled";
+    case "another-window":
+      return "a login from another window";
+    case "no-longer-pending":
+      return "a login already given up on";
+  }
+}
+
+/** A cause as the one sentence a Notice carries - what happened, and nothing about what to do. */
+function causeAsSentence(cause: LoginFailure): string {
+  switch (cause.kind) {
+    case "unreachable":
+      return "The identity provider could not be reached at all.";
+    case "endpoint-unresolvable":
+      return "The configured Keycloak URL and realm do not resolve to a login endpoint.";
+    case "provider-refused":
+      return `The identity provider refused the login, with status ${cause.status}.`;
+    case "redirect-not-registered":
+      return "The identity provider does not accept the address this plugin listens on for the answer.";
+    case "no-code":
+      return "The login came back without an authorization code.";
+    case "no-callback":
+      return "The login was started and nothing ever came back from the browser.";
+    case "cancelled":
+      return "The login was ended before it finished.";
+    case "another-window":
+      return "A login started in another Obsidian window came back here.";
+    case "no-longer-pending":
+      return "A login came back here after it had already been given up on.";
+  }
+}
+
+/** A cause with what to do about it - the settings tab's length, and the only surface with room for it. */
+function causeWithRemedy(cause: LoginFailure): string {
+  switch (cause.kind) {
+    case "unreachable":
+      return `${causeAsSentence(cause)} Check the Keycloak URL above and this machine's connection, then log in again.`;
+    case "endpoint-unresolvable":
+      return `${causeAsSentence(cause)} Check the Keycloak URL and the realm above against the safeLearn instance you are logging in to.`;
+    case "provider-refused":
+      return `${causeAsSentence(cause)} Logging in again is usually enough; if it keeps happening, whoever administers the realm can say why.`;
+    case "redirect-not-registered":
+      return `${causeAsSentence(cause)} It has to be a valid redirect URI on this plugin's own Keycloak client, which is something whoever administers the realm adds once.`;
+    case "no-code":
+      return `${causeAsSentence(cause)} Logging in again usually produces one; if it does not, the realm refused the login itself.`;
+    case "no-callback":
+      return `${causeAsSentence(cause)} The browser may have been closed before the login finished, or the answer was delivered to another Obsidian window - it goes to whichever one is in front, not to the one that asked. Log in again.`;
+    case "cancelled":
+      return `${causeAsSentence(cause)} Log in again whenever you want to.`;
+    case "another-window":
+      return `${causeAsSentence(cause)} That window is the one waiting for it, and nothing was logged in here. If you meant to log in here, start a login from here.`;
+    case "no-longer-pending":
+      return `${causeAsSentence(cause)} Nothing was logged in from it. Log in again if you still want to.`;
+  }
+}
+
+/** The moment a login was started, in the reader's own clock - a duration would have to be recomputed to stay true, and nothing redraws it while it is read. */
+function timeOfDay(at: number): string {
+  return new Date(at).toLocaleTimeString();
+}
+
+/** The state and its particulars in one sentence: what a Notice announces and what the status bar carries as its tooltip. */
+function loginStateSentence(state: LoginState): string {
+  switch (state.name) {
+    case "logged-out":
+      return "Not logged in.";
+    case "logging-in":
+      return `Logging in since ${timeOfDay(state.startedAt)}${state.instanceUrl ? `, against ${state.instanceUrl}` : ""}.`;
+    case "logged-in":
+      return state.account ? `Logged in as ${state.account}.` : "Logged in.";
+    case "logged-in-without-role":
+      return `${state.account ? `Logged in as ${state.account}` : "Logged in"}, but this account carries neither the teacher nor the admin role on this safeLearn instance.`;
+    case "login-failed":
+      return causeAsSentence(state.cause);
+  }
+}
+
+/** The state in the fewest words that still name it - the status-bar item's own line. */
+function loginStateInBrief(state: LoginState): string {
+  return state.name === "login-failed"
+    ? `${loginStateName(state)}: ${causeInBrief(state.cause)}`
+    : loginStateName(state);
+}
+
+/** The state, its particulars and what to do about it - the settings tab's length. */
+function loginStateInFull(state: LoginState): string {
+  switch (state.name) {
+    case "logged-out":
+      return 'Log in to use the directory picker and "List classes".';
+    case "logging-in":
+      return `${loginStateSentence(state)} The browser has the rest of it; this comes back on its own when it does.`;
+    case "logged-in":
+      return `${loginStateSentence(state)} The directory picker and "List classes" are available.`;
+    case "logged-in-without-role":
+      return `${loginStateSentence(state)} The directory picker and "List classes" will stay empty. Ask whoever administers the realm to grant one, or log in as a different account.`;
+    case "login-failed":
+      return `${loginStateName(state)}. ${causeWithRemedy(state.cause)}`;
   }
 }
 
@@ -180,7 +488,36 @@ export default class SafeLearnPlugin extends Plugin {
   private accessTokenExpiresAt = 0;
 
   /** A login in progress, keyed by its `state`, so a mismatched callback can be told apart from a real one. */
-  private pendingLogins = new Map<string, string>();
+  private pendingLogins = new Map<string, PendingLogin>();
+
+  /**
+   * The `state` of every login this instance started and then stopped waiting
+   * on - expired, cancelled, or superseded by a later one.
+   *
+   * Without it a callback arriving late is indistinguishable from one belonging
+   * to another window, and `plugin-login-state` requires those two to be told
+   * apart. Bounded, because it is only ever read by a callback that can still
+   * arrive: the oldest go first, which is the order they stop being able to.
+   */
+  private concludedLogins = new Set<string>();
+
+  /**
+   * Why the last login attempt ended without an identity, or `null` where
+   * nothing has failed since one last succeeded.
+   *
+   * Nothing held this before - a failed exchange went to `console.error` and
+   * was gone, which is why the person who could act on it never saw it.
+   */
+  private lastFailure: LoginFailure | null = null;
+
+  /** Held so a login that completes can redraw it - the callback arrives while the tab is the very thing being looked at. */
+  private settingTab: SafeLearnSettingTab | null = null;
+
+  /** The status-bar item, while there is one. Absent - not empty - while no instance is configured, per `plugin-directory-auth`. */
+  private statusBarItem: HTMLElement | null = null;
+
+  /** The state last announced, as a signature, so that a state which has not changed is not announced again. */
+  private announcedState: string | null = null;
 
   async onload() {
     console.log("✅ SafeLearn plugin loaded");
@@ -244,7 +581,8 @@ export default class SafeLearnPlugin extends Plugin {
       })
     );
 
-    this.addSettingTab(new SafeLearnSettingTab(this.app, this));
+    this.settingTab = new SafeLearnSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
 
     this.registerObsidianProtocolHandler(this.protocolAction(), (params) => this.handleAuthCallback(params));
 
@@ -263,11 +601,23 @@ export default class SafeLearnPlugin extends Plugin {
       },
     });
 
+    // A login in progress ends itself when its lifetime passes, on a timer
+    // rather than on the next read of the state: a status-bar item that only
+    // corrects itself when somebody opens the settings is the same defect
+    // wearing a different hat. Registered through `registerInterval` so
+    // Obsidian tears it down with the plugin.
+    this.registerInterval(window.setInterval(() => this.expirePendingLogins(), EXPIRY_TICK_MS));
+
     // Not awaited: onload should not block Obsidian's own startup on a
-    // network round trip, and a failure here is not an error anyone sees -
-    // it just leaves the plugin "not logged in" until a person logs in again.
-    // See `tasks.md` #5.2.
-    if (this.data.refreshToken) void this.refreshAccessToken();
+    // network round trip. See `tasks.md` #5.2. What has changed is that the
+    // interval it takes is no longer indistinguishable from being logged out -
+    // `restoreLogin` registers it as a login in progress first.
+    if (this.data.refreshToken) void this.restoreLogin();
+
+    // Draws the status-bar item for whatever state the above just put the
+    // plugin in. Announces nothing: neither state it can be in here is one
+    // this plugin announces, and a Notice at every start would be noise.
+    this.notifyLoginStateChanged();
   }
 
   // ################### Settings (2) ###################
@@ -329,16 +679,263 @@ export default class SafeLearnPlugin extends Plugin {
     return roles.includes("teacher") || roles.includes("teachers") || roles.includes("admin");
   }
 
+  /**
+   * Which of `plugin-login-state`'s five states the login is in.
+   *
+   * The one derivation, from what is already held: the pending entries, the
+   * tokens, and the last recorded failure. It has no side effects - it expires
+   * nothing, records nothing and draws nothing - so that every surface can call
+   * it as often as it likes and a check can construct a situation and ask.
+   *
+   * The order the four inputs are consulted in is the whole of the design:
+   *
+   * - A login in progress comes first, because a person who has just clicked
+   *   "Log in" is logging in whatever else is true, and because a restore that
+   *   has not concluded must not read as being logged out.
+   * - A held identity comes next, and above any recorded failure. A failed
+   *   attempt while an identity is still held leaves the directory working, and
+   *   a surface saying "login failed" over a login that works is exactly the
+   *   disagreement between what is shown and what a call will do that this
+   *   change exists to end. The Notice still names that failure once.
+   * - A pending entry past its lifetime reads as the failure the timer is about
+   *   to record, rather than as nothing at all, so the two cannot disagree in
+   *   the tick between them.
+   *
+   * "A usable identity" is the same question `hasLogin` asks, and deliberately
+   * so: a state derived from a stricter test than the one everything gates on
+   * would be a state that disagrees with what a call will do.
+   */
+  loginState(): LoginState {
+    const now = Date.now();
+    let expired: PendingLogin | null = null;
+    for (const pending of this.pendingLogins.values()) {
+      if (now < pending.expiresAt) {
+        return { name: "logging-in", startedAt: pending.startedAt, instanceUrl: pending.instanceUrl };
+      }
+      expired = pending;
+    }
+
+    if (this.accessToken) {
+      const account = accessTokenAccountName(this.accessToken);
+      return this.hasDirectoryRole()
+        ? { name: "logged-in", account }
+        : { name: "logged-in-without-role", account };
+    }
+
+    if (expired) return { name: "login-failed", cause: { kind: "no-callback" } };
+    if (this.lastFailure) return { name: "login-failed", cause: this.lastFailure };
+    return { name: "logged-out" };
+  }
+
+  /**
+   * Every surface, from one place, whenever a fact behind the state changed.
+   *
+   * Called after an exchange, after a refresh, on logout, on a cancellation, on
+   * an expiry and on a rejected callback. Before this the plugin had exactly one
+   * redraw in it, put where the one path anybody noticed was broken - which is
+   * why the other four went on showing a state that had stopped being true.
+   */
+  private notifyLoginStateChanged() {
+    const state = this.loginState();
+    this.renderStatusBar(state);
+    // Redrawn whether or not it is open: a tab that is closed rebuilds a
+    // container nobody is looking at, and asking Obsidian whether this
+    // particular tab is the one on screen is more machinery than that costs.
+    this.settingTab?.display();
+    this.announceLoginState(state);
+  }
+
+  /**
+   * The status-bar item: the state, for as long as the state lasts, without the
+   * settings being open.
+   *
+   * It exists only while an instance is configured. `plugin-directory-auth`
+   * asks for absence and not for an empty or neutral item, and an item saying
+   * "Not logged in" on a vault that has never been pointed at a safeLearn
+   * instance would be exactly the thing it forbids.
+   */
+  private renderStatusBar(state: LoginState) {
+    if (!this.instanceUrl()) {
+      this.statusBarItem?.remove();
+      this.statusBarItem = null;
+      return;
+    }
+
+    if (!this.statusBarItem) {
+      this.statusBarItem = this.addStatusBarItem();
+      this.statusBarItem.addClass("safelearn-login-status");
+      // Every remedy the settings tab names is in the settings tab, so that is
+      // where the one clickable thing carrying a state goes.
+      this.statusBarItem.addEventListener("click", () => this.openOwnSettings());
+    }
+
+    this.statusBarItem.setText(`SafeLearn: ${loginStateInBrief(state)}`);
+    // The state name as a value rather than as a colour or a word, so that a
+    // check reads what the plugin concluded and not how it was worded.
+    this.statusBarItem.dataset.safelearnLoginState = state.name;
+    this.statusBarItem.setAttr("aria-label", loginStateSentence(state));
+  }
+
+  /** Opens this plugin's own settings tab, which is what the status-bar item is for. */
+  private openOwnSettings() {
+    this.app.setting.open();
+    this.app.setting.openTabById(this.manifest.id);
+  }
+
+  /**
+   * Announces a state that differs from the one last announced, and only that.
+   *
+   * A change of failure cause counts as a change even where the state name does
+   * not, because "login failed" twice for two different reasons is two things a
+   * person needs to know. A background renewal that leaves the state exactly
+   * where it was announces nothing, which is what keeps a flapping refresh from
+   * becoming a stream of notices.
+   *
+   * Only the three states worth interrupting somebody for are announced. Being
+   * logged out and starting a login are both things a person just did, and the
+   * status-bar item carries them for as long as they last.
+   */
+  private announceLoginState(state: LoginState) {
+    const signature =
+      state.name === "login-failed"
+        ? `${state.name}:${state.cause.kind}:${"status" in state.cause ? state.cause.status : ""}`
+        : state.name;
+    if (signature === this.announcedState) return;
+    this.announcedState = signature;
+
+    if (state.name === "logged-out" || state.name === "logging-in") return;
+    this.announceLogin(loginStateSentence(state));
+  }
+
+  /** Raises one Notice, unless no instance is configured - in which case this plugin says nothing about a login anywhere. */
+  private announceLogin(text: string) {
+    if (!this.instanceUrl()) return;
+    new Notice(`SafeLearn: ${text}`);
+  }
+
+  /** Records why a login ended without an identity, and tells every surface. Settling the pending entries is the caller's, which is where that is known. */
+  private failLogin(cause: LoginFailure) {
+    this.lastFailure = cause;
+    this.notifyLoginStateChanged();
+  }
+
+  /** How long a login in progress is given: what the realm itself last answered for a refresh token, read at the moment the login starts. */
+  private pendingLoginLifetimeMs(): number {
+    const seconds = Number(this.data.refreshTokenLifetimeSeconds);
+    const usable = Number.isFinite(seconds) && seconds > 0 ? seconds : DEFAULT_DATA.refreshTokenLifetimeSeconds;
+    return usable * 1000;
+  }
+
+  /** Stops waiting on every login in progress, remembering each so a callback arriving afterwards can say what became of it. */
+  private concludePendingLogins() {
+    for (const state of this.pendingLogins.keys()) this.rememberConcluded(state);
+    this.pendingLogins.clear();
+  }
+
+  private rememberConcluded(state: string) {
+    this.concludedLogins.add(state);
+    while (this.concludedLogins.size > CONCLUDED_LOGINS_KEPT) {
+      const oldest = this.concludedLogins.values().next().value;
+      if (oldest === undefined) break;
+      this.concludedLogins.delete(oldest);
+    }
+  }
+
+  /**
+   * Ends a login that has been in progress longer than its lifetime.
+   *
+   * This is what turns *logging in* into *login failed* without anybody having
+   * to click, and it is the only thing that ever ends a login nobody came back
+   * from. The entry is dropped: `plugin-login-state` says nothing is retained
+   * past that point, and the `state` is remembered instead, which is what lets
+   * a callback that turns up afterwards be told from a stray one.
+   */
+  private expirePendingLogins() {
+    const now = Date.now();
+    let expired = false;
+    for (const [state, pending] of [...this.pendingLogins]) {
+      if (now < pending.expiresAt) continue;
+      this.pendingLogins.delete(state);
+      this.rememberConcluded(state);
+      expired = true;
+    }
+    if (!expired) return;
+    this.failLogin({ kind: "no-callback" });
+  }
+
+  /**
+   * The renewal that follows a restart, shown as what it is.
+   *
+   * It is registered as a login in progress before it fires, so the interval
+   * between Obsidian starting and the token landing reads as *logging in*
+   * rather than as *not logged in*, and it is removed in a `finally` so that
+   * interval ends whichever way the renewal went. Not awaited by `onload`: the
+   * whole point of the state is that the start of the application is not held
+   * up waiting for it.
+   */
+  private async restoreLogin() {
+    // Prefixed, and with no verifier: a callback can never carry this `state`,
+    // since a `state` only ever comes back from one this plugin sent.
+    const key = `restore:${randomPkceString()}`;
+    const startedAt = Date.now();
+    this.pendingLogins.set(key, {
+      verifier: null,
+      startedAt,
+      expiresAt: startedAt + this.pendingLoginLifetimeMs(),
+      instanceUrl: this.instanceUrl(),
+    });
+    this.notifyLoginStateChanged();
+
+    try {
+      await this.refreshAccessToken();
+    } finally {
+      this.pendingLogins.delete(key);
+      this.notifyLoginStateChanged();
+    }
+  }
+
   // ################### PKCE login (4) ###################
 
-  /** Starts a login: opens the realm's own login page in the system browser and returns immediately - the rest happens in `handleAuthCallback`. */
+  /**
+   * Starts a login: opens the realm's own login page in the system browser and
+   * returns immediately - the rest happens in `handleAuthCallback`.
+   *
+   * Reachable from every state, `logging in` and `login failed` included, and
+   * starting again supersedes whatever was already in flight rather than adding
+   * to it: `plugin-login-state` asks for exactly one login in progress
+   * afterwards, and two entries waiting on two browser tabs is a state nobody
+   * could read.
+   */
   async login() {
     const verifier = randomPkceString();
     const state = randomPkceString();
     const challenge = await pkceChallenge(verifier);
-    this.pendingLogins.set(state, verifier);
 
-    const url = new URL(this.authorizationEndpoint());
+    // Built before anything is registered: a Keycloak URL that resolves to
+    // nothing is a failure of this login, and a pending entry that was never
+    // sent anywhere would sit there until it expired.
+    let url: URL;
+    try {
+      url = new URL(this.authorizationEndpoint());
+    } catch {
+      this.concludePendingLogins();
+      this.failLogin({ kind: "endpoint-unresolvable" });
+      return;
+    }
+
+    this.concludePendingLogins();
+    const startedAt = Date.now();
+    this.pendingLogins.set(state, {
+      verifier,
+      startedAt,
+      expiresAt: startedAt + this.pendingLoginLifetimeMs(),
+      instanceUrl: this.instanceUrl(),
+    });
+    // The attempt now in progress is what is true; the last one's failure is
+    // not, and leaving it recorded would outlive the state it belonged to.
+    this.lastFailure = null;
+    this.notifyLoginStateChanged();
+
     url.searchParams.set("response_type", "code");
     url.searchParams.set("client_id", DIRECTORY_CLIENT_ID);
     url.searchParams.set("redirect_uri", this.redirectUri());
@@ -358,30 +955,90 @@ export default class SafeLearnPlugin extends Plugin {
     this.data.refreshToken = null;
     this.accessToken = null;
     this.accessTokenExpiresAt = 0;
+    this.lastFailure = null;
+    this.concludePendingLogins();
     void this.saveSettings();
+    this.notifyLoginStateChanged();
+  }
+
+  /**
+   * Ends a login in progress without waiting for it to expire.
+   *
+   * The lifetime a login gets is the realm's figure for a refresh token, which
+   * on a realm with long sessions is far longer than anybody waits on a browser
+   * round trip - so `plugin-login-state` requires a way out that is not the
+   * timer. Recorded as a cancellation rather than as nothing, because the state
+   * it leaves behind is a person's own doing and reads wrongly as "not logged
+   * in", which is what it was before they clicked anything.
+   */
+  cancelLogin() {
+    if (this.pendingLogins.size === 0) return;
+    this.concludePendingLogins();
+    this.failLogin({ kind: "cancelled" });
   }
 
   /**
    * Handles `obsidian://<manifest-id>-auth?...`.
    *
    * `obsidian://` callbacks are dispatched to whichever Obsidian window is
-   * frontmost, not necessarily the vault that started the login - so a
-   * callback whose `state` does not match a login this vault's plugin
-   * instance is actually waiting on is dropped without a notice, per
-   * `design.md`.
+   * frontmost, not necessarily the vault that started the login. That is the
+   * environment and not a defect to fix - what changed is that this window no
+   * longer returns in silence from any of its three exits. The window a
+   * callback lands in is the one window that knows what became of that login,
+   * and it used to be the one that said nothing.
+   *
+   * Nothing here coordinates with the window that is still waiting. It gets its
+   * own expiry, which is the honest answer: from where it stands, a callback
+   * that went elsewhere and a callback that never existed are one observation.
    */
   private async handleAuthCallback(params: Record<string, string>) {
     const state = params.state;
-    const verifier = typeof state === "string" ? this.pendingLogins.get(state) : undefined;
-    if (!verifier || typeof state !== "string") return;
-    this.pendingLogins.delete(state);
+    const held = typeof state === "string" ? this.pendingLogins.get(state) : undefined;
+    // Past its lifetime is past it, whether or not the timer has come round to
+    // sweeping the entry yet. The alternative is a login that completes or does
+    // not depending on which second the callback lands in.
+    const expired = held !== undefined && Date.now() >= held.expiresAt;
+    const pending = held !== undefined && !expired ? held : undefined;
 
-    if (typeof params.code !== "string") return;
+    if (expired && typeof state === "string") {
+      this.pendingLogins.delete(state);
+      this.rememberConcluded(state);
+    }
+
+    if (!pending || pending.verifier === null || typeof state !== "string") {
+      // Told apart by what this window remembers: a `state` it once waited on
+      // and gave up is a login of its own that came back too late, and anything
+      // else was begun somewhere this window knows nothing about. It names no
+      // vault, because there is nothing here to name it from.
+      const cause: LoginFailure =
+        typeof state === "string" && (expired || this.concludedLogins.has(state))
+          ? { kind: "no-longer-pending" }
+          : { kind: "another-window" };
+      this.lastFailure = cause;
+      this.notifyLoginStateChanged();
+      // A callback landing while this window waits on a login of its own leaves
+      // the state at *logging in*, which is what `plugin-login-state` requires -
+      // and so the notifier announced nothing. The observation is still this
+      // window's to report, so it is reported here rather than swallowed by a
+      // state that outranks it.
+      if (this.loginState().name !== "login-failed") this.announceLogin(causeAsSentence(cause));
+      return;
+    }
+
+    this.pendingLogins.delete(state);
+    this.rememberConcluded(state);
+
+    if (typeof params.code !== "string") {
+      this.failLogin({ kind: "no-code" });
+      return;
+    }
 
     try {
-      await this.exchangeCodeForTokens(params.code, verifier);
+      await this.exchangeCodeForTokens(params.code, pending.verifier);
+      this.lastFailure = null;
+      this.notifyLoginStateChanged();
     } catch (error) {
-      console.error("SafeLearn: the login could not be completed.", error);
+      this.failLogin(failureOf(error));
     }
   }
 
@@ -403,7 +1060,9 @@ export default class SafeLearnPlugin extends Plugin {
    *
    * A failure here - the refresh token itself expired or was revoked -
    * clears it and returns the plugin to "not logged in" rather than being
-   * retried on every subsequent call. See `tasks.md` #5.4.
+   * retried on every subsequent call. See `tasks.md` #5.4. That is unchanged;
+   * what it gains is a cause somebody can read, in place of a `false` that
+   * every caller turned back into "not logged in" without a reason.
    */
   async refreshAccessToken(): Promise<boolean> {
     const refreshToken = this.data.refreshToken;
@@ -417,31 +1076,63 @@ export default class SafeLearnPlugin extends Plugin {
 
     try {
       await this.applyTokenResponse(body);
+      this.lastFailure = null;
+      this.notifyLoginStateChanged();
       return true;
     } catch (error) {
       this.data.refreshToken = null;
       this.accessToken = null;
       this.accessTokenExpiresAt = 0;
       void this.saveSettings();
+      this.failLogin(failureOf(error));
       return false;
     }
   }
 
+  /**
+   * The one request that obtains tokens, for both grants.
+   *
+   * Every way out of it that is not a token is a cause, constructed here
+   * because here is where it was observed: the address that could not be built,
+   * the request nothing answered, the status the answer carried. A caller two
+   * frames up cannot tell any of those apart, which is why the failure travels
+   * as a tag rather than as a `false`.
+   */
   private async applyTokenResponse(body: URLSearchParams) {
-    const response = await requestUrl({
-      url: this.tokenEndpoint(),
-      method: "POST",
-      contentType: "application/x-www-form-urlencoded",
-      body: body.toString(),
-      throw: false,
-    });
-    if (response.status >= 400) {
-      throw new Error(`Keycloak's token endpoint answered with status ${response.status}.`);
+    let endpoint: string;
+    try {
+      endpoint = new URL(this.tokenEndpoint()).toString();
+    } catch {
+      throw new LoginFailureError({ kind: "endpoint-unresolvable" });
     }
+
+    let response;
+    try {
+      response = await requestUrl({
+        url: endpoint,
+        method: "POST",
+        contentType: "application/x-www-form-urlencoded",
+        body: body.toString(),
+        throw: false,
+      });
+    } catch {
+      // `throw: false` covers an answer that carries a status. It does not
+      // cover a request that never got one, and that is the single observation
+      // separating a host which is not there from a realm which refused.
+      throw new LoginFailureError({ kind: "unreachable" });
+    }
+
+    if (response.status >= 400) throw new LoginFailureError(refusalOf(response.status, response.text));
+
     const json = response.json;
     this.accessToken = json.access_token;
     this.accessTokenExpiresAt = Date.now() + Math.max(0, Number(json.expires_in) - 30) * 1000;
     this.data.refreshToken = json.refresh_token ?? this.data.refreshToken;
+    // Kept, where it used to be dropped: this is the realm's own figure for how
+    // long the token it just issued lives, and it is what a login in progress
+    // is given to conclude in. See `design.md`.
+    const lifetime = Number(json.refresh_expires_in);
+    if (Number.isFinite(lifetime) && lifetime > 0) this.data.refreshTokenLifetimeSeconds = lifetime;
     await this.saveSettings();
   }
 
@@ -590,29 +1281,42 @@ class SafeLearnSettingTab extends PluginSettingTab {
     // not shown, not an error - while there is none. See `plugin-directory-auth`.
     if (!this.plugin.instanceUrl()) return;
 
-    const login = new Setting(containerEl).setName("Login").setDesc(
-      this.plugin.hasLogin()
-        ? this.plugin.hasDirectoryRole()
-          ? 'Logged in. The directory picker and "List classes" are available.'
-          : "Logged in, but this account has no teacher or admin role on this safeLearn instance — the directory picker and \"List classes\" will stay empty. Ask whoever administers the realm to grant one, or log in as a different account."
-        : 'Log in to use the directory picker and "List classes".'
+    // The state, and not a boolean. `hasLogin()` is still the one question
+    // everything that makes a call asks; it stopped being the question this is
+    // rendered from, because four of the five situations a person has to tell
+    // apart collapse into it.
+    const state = this.plugin.loginState();
+    const login = new Setting(containerEl).setName("Login").setDesc(loginStateInFull(state));
+    login.settingEl.addClass("safelearn-login-setting");
+    // Read by a check, and by the stylesheet, so that neither has to recognise
+    // the state from the words it happens to be worded with.
+    login.settingEl.dataset.safelearnLoginState = state.name;
+
+    // Ending a login in progress, which before this was reachable from nowhere:
+    // the tab offered "Log in" or "Log out" and had nothing in between.
+    if (state.name === "logging-in") {
+      login.addButton((button) => button.setButtonText("Cancel").onClick(() => this.plugin.cancelLogin()));
+    }
+
+    if (state.name === "logged-in" || state.name === "logged-in-without-role") {
+      login.addButton((button) => button.setButtonText("Log out").onClick(() => this.plugin.logout()));
+    }
+
+    // Offered in every state, `plugin-login-state`'s requirement: a failed
+    // login is retried without first logging out or restarting anything, and a
+    // login in progress is superseded rather than added to.
+    const holdsIdentity = state.name === "logged-in" || state.name === "logged-in-without-role";
+    login.addButton((button) =>
+      button
+        .setButtonText(holdsIdentity ? "Log in again" : state.name === "logging-in" ? "Start again" : "Log in")
+        .setCta()
+        .onClick(() => void this.plugin.login())
     );
 
-    if (this.plugin.hasLogin()) {
-      login.addButton((button) =>
-        button.setButtonText("Log out").onClick(() => {
-          this.plugin.logout();
-          this.display();
-        })
-      );
-    } else {
-      login.addButton((button) =>
-        button
-          .setButtonText("Log in")
-          .setCta()
-          .onClick(() => void this.plugin.login())
-      );
-    }
+    // Nothing redraws this tab from here. Every control above changes a fact
+    // the state is derived from, and each of those calls the one notifier,
+    // which redraws this tab among the rest. A `this.display()` next to a
+    // control would be the arrangement that let four of five paths go stale.
   }
 }
 
