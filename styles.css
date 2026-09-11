@@ -461,6 +461,14 @@
   font-size: 0.85em;
 }
 
+/* `DirectoryInfoModal`'s user/class totals - hidden (`el.hidden`) unless the
+   one `searchDirectory("")` fetch resolved with an `ok` outcome. */
+.safelearn-directory-info-summary {
+  color: var(--text-muted);
+  font-size: 0.85em;
+  margin-bottom: 8px;
+}
+
 .safelearn-directory-search-query,
 .safelearn-directory-class-filter {
   width: 100%;

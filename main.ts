@@ -1593,11 +1593,6 @@ function isReservedName(name: string): boolean {
   return NAMES_RESERVED_FOR_ROLES.includes(name.trim().toLowerCase());
 }
 
-/** An ATX heading, and how deep it is. */
-function headingPattern(): RegExp {
-  return /^(#{1,6})\s/;
-}
-
 /** Where something sits in the line, and what it says. */
 type Span = { index: number; length: number; text: string };
 
@@ -2985,17 +2980,10 @@ class ColumnCountModal extends Modal {
 /**
  * Writes one restricted section per name, in the order the names were given.
  *
- * The heading goes **inside** the block, and that is not a formatting choice.
- * `removeForbiddenContent` replaces what stands *between* the markers, per
- * reader, and leaves everything outside them for everyone. A heading naming the
- * student above their block would therefore stay on the page for every other
- * student - so a document written to show each of them only their own section
- * would show all of them the names of all the others. Inside the block, a reader
- * who is not addressed sees an empty space.
- *
- * Its level is one below the last heading above the insertion point, so the
- * sections stand underneath whatever chapter they were put in rather than at a
- * level this function picked.
+ * A section carries no heading of its own. The reading view already renders the
+ * addressed name as the block's heading, so a heading written into the section's
+ * content would repeat, in the document's own text, what every reader already
+ * sees rendered above it.
  */
 function insertSectionsPerName(editor: Editor, names: string[]) {
   if (names.length === 0) return;
@@ -3004,16 +2992,15 @@ function insertSectionsPerName(editor: Editor, names: string[]) {
   // selected. The sections go where the selection begins and nothing is lost.
   editor.setCursor(editor.getCursor("from"));
 
-  const heading = "#".repeat(headingLevelForSections(editor));
   const lines: string[] = [];
   for (const name of names) {
     if (lines.length > 0) lines.push("");
-    lines.push(`@@@ ${name}`, `${heading} ${name}`, "", "@@@");
+    lines.push(`@@@ ${name}`, "", "@@@");
   }
 
-  // Line 2 of the first section: its heading is written, and what follows is
-  // what the person is about to write.
-  writeLines(editor, lines, 2);
+  // Line 1 of the first section: the blank line right after its directive,
+  // which is where the person is about to write.
+  writeLines(editor, lines, 1);
   reportReservedNames(names);
 }
 
@@ -3034,16 +3021,6 @@ function restrictSelection(editor: Editor, entries: string[]) {
   const content = selection === "" ? [""] : selection.split("\n");
   const lines = [`@@@ ${entries.join(", ")}`, ...content, "@@@"];
   writeLines(editor, lines, selection === "" ? 1 : lines.length - 1);
-}
-
-/** One level below the last heading above the insertion point, and one where there is none. */
-function headingLevelForSections(editor: Editor): number {
-  const at = editor.getCursor("from").line;
-  for (let line = at; line >= 0; line--) {
-    const match = headingPattern().exec(editor.getLine(line));
-    if (match) return Math.min(match[1].length + 1, 6);
-  }
-  return 1;
 }
 
 /**
@@ -3384,6 +3361,12 @@ class DirectoryInfoModal extends Modal {
     const status = contentEl.createDiv({ cls: "safelearn-directory-status" });
     status.hidden = true;
 
+    // Shown only on an `ok` outcome, alongside the Teachers/Classes/Users
+    // lists below rather than instead of them - `proposal.md`, "visible as
+    // soon as the one `searchDirectory("")` fetch resolves".
+    const summary = contentEl.createDiv({ cls: "safelearn-directory-info-summary" });
+    summary.hidden = true;
+
     contentEl.createEl("h4", { text: "Teachers" });
     const teachers = contentEl.createEl("ul", { cls: "safelearn-directory-info-list" });
 
@@ -3430,10 +3413,16 @@ class DirectoryInfoModal extends Modal {
       entries = fetched;
     }
 
+    const classValues = classLikeValues(entries);
+    if (outcome === "ok") {
+      summary.setText(`${entries.length} users, ${classValues.length} classes`);
+      summary.hidden = false;
+    }
+
     for (const entry of entries.filter(entryHoldsTeacherOrAdmin)) {
       teachers.createEl("li", { text: entry.name });
     }
-    for (const value of classLikeValues(entries)) {
+    for (const value of classValues) {
       classes.createEl("li", { text: value });
     }
     renderResults(entries);
