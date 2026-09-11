@@ -96,6 +96,8 @@ Logging in needs a Keycloak client that does not exist by default. In the `safeL
 * No client secret
 * Valid Redirect URIs: `obsidian://safelearn-formatter-auth`
 * No client roles of its own — what a login is allowed to do comes from the roles already on that person's Keycloak account, the same way the safeLearn server itself checks them
+* **Full Scope Allowed** — so a role held as a client role on the main safeLearn client (e.g. `admin`) reaches this client's tokens too, without maintaining it a second time here
+* The **same client scope that carries the `ldap` attribute mapper** on the main safeLearn client, assigned to this client as well. It is a custom mapper, not part of Keycloak's default `roles` scope, so it is not picked up by Full Scope Allowed and has to be added explicitly — otherwise a person whose teacher/admin role comes only from the LDAP `OU=...` claim (the common case) passes login but the directory picker and "List classes" stay empty with no error shown, because the server's role check reads that claim the same way `deriveRoles` does for every other login
 
 This is a one-time setup step for the person administering the Keycloak realm, not something the plugin or a person using it can do. Nobody using only the tags earlier in this document needs it.
 
