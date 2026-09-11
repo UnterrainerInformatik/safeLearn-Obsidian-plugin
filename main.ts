@@ -481,8 +481,14 @@ function loginStateInBrief(state: LoginState): string {
     : loginStateName(state);
 }
 
-/** The state, its particulars and what to do about it - the settings tab's length. */
-function loginStateInFull(state: LoginState): string {
+/**
+ * The state, its particulars and what to do about it - the settings tab's
+ * length. A `DocumentFragment` only for `logged-in-without-role`, so its hint
+ * back at the `Server client id` field above can set that field's name apart
+ * - a wrong value there and a role that is genuinely missing look identical
+ * from here, and the setting is the cheaper thing to rule out first.
+ */
+function loginStateInFull(state: LoginState): string | DocumentFragment {
   switch (state.name) {
     case "logged-out":
       return 'Log in to use the directory picker, "List classes" and "Show directory info".';
@@ -490,8 +496,22 @@ function loginStateInFull(state: LoginState): string {
       return `${loginStateSentence(state)} The browser has the rest of it; this comes back on its own when it does.`;
     case "logged-in":
       return `${loginStateSentence(state)} The directory picker, "List classes" and "Show directory info" are available.`;
-    case "logged-in-without-role":
-      return `${loginStateSentence(state)} The directory picker, "List classes" and "Show directory info" will stay empty. Ask whoever administers the realm to grant one, or log in as a different account.`;
+    case "logged-in-without-role": {
+      const fragment = document.createDocumentFragment();
+      fragment.append(
+        `${loginStateSentence(state)} The directory picker, "List classes" and "Show directory info" will stay empty. ` +
+          "Check the "
+      );
+      const fieldName = document.createElement("strong");
+      fieldName.textContent = "Server client id";
+      fragment.append(fieldName);
+      fragment.append(
+        " setting above first - a value that does not match this safeLearn server's own client hides a role " +
+          "that is really assigned, the same as a role that is genuinely missing. Otherwise, ask whoever " +
+          "administers the realm to grant one, or log in as a different account."
+      );
+      return fragment;
+    }
     case "login-failed":
       return `${loginStateName(state)}. ${causeWithRemedy(state.cause)}`;
   }
@@ -1185,8 +1205,14 @@ export default class SafeLearnPlugin extends Plugin {
 
   /** Refreshes the access token first when it is missing or close to expiry. Called before every directory client call. */
   private async ensureAccessToken(): Promise<string | null> {
-    if (this.accessToken && Date.now() < this.accessTokenExpiresAt) return this.accessToken;
+    if (this.accessToken && Date.now() < this.accessTokenExpiresAt) {
+      // TEMPORARY debug logging - remove once the directory-search bug is resolved.
+      console.log("[SafeLearn debug] ensureAccessToken: reusing cached token, expires in", Math.round((this.accessTokenExpiresAt - Date.now()) / 1000), "s");
+      return this.accessToken;
+    }
+    console.log("[SafeLearn debug] ensureAccessToken: cached token missing/expired, refreshing");
     const refreshed = await this.refreshAccessToken();
+    console.log("[SafeLearn debug] ensureAccessToken: refresh outcome", refreshed, "lastFailure", this.lastFailure);
     return refreshed ? this.accessToken : null;
   }
 
@@ -1208,12 +1234,19 @@ export default class SafeLearnPlugin extends Plugin {
    */
   async searchDirectory(query: string): Promise<DirectorySearchResult> {
     const instanceUrl = this.instanceUrl();
-    if (!instanceUrl) return { outcome: "refused", entries: [] };
+    if (!instanceUrl) {
+      console.log("[SafeLearn debug] searchDirectory: refused, no instance URL configured");
+      return { outcome: "refused", entries: [] };
+    }
 
     const token = await this.ensureAccessToken();
-    if (!token) return { outcome: "refused", entries: [] };
+    if (!token) {
+      console.log("[SafeLearn debug] searchDirectory: refused, ensureAccessToken returned no token");
+      return { outcome: "refused", entries: [] };
+    }
 
     const url = `${stripTrailingSlash(instanceUrl)}/api/admin/directory/search?q=${encodeURIComponent(query)}`;
+    console.log("[SafeLearn debug] searchDirectory: requesting", url);
     let response;
     try {
       response = await requestUrl({
@@ -1222,9 +1255,11 @@ export default class SafeLearnPlugin extends Plugin {
         headers: { Authorization: `Bearer ${token}` },
         throw: false,
       });
-    } catch {
+    } catch (error) {
+      console.log("[SafeLearn debug] searchDirectory: unreachable,", error);
       return { outcome: "unreachable", entries: [] };
     }
+    console.log("[SafeLearn debug] searchDirectory: response status", response.status, "body", response.text);
     if (response.status === 403) return { outcome: "refused", entries: [] };
     if (response.status >= 400) return { outcome: "failed", entries: [] };
 
