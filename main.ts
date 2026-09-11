@@ -83,6 +83,9 @@ interface SafeLearnPluginData {
   serverClientId: string;
   refreshToken: string | null;
   refreshTokenLifetimeSeconds: number;
+  // Gates `debugLog` - off by default, switched on from the settings tab
+  // only while troubleshooting a login/directory-search problem.
+  debugLogging: boolean;
 }
 
 const DEFAULT_DATA: SafeLearnPluginData = {
@@ -101,6 +104,9 @@ const DEFAULT_DATA: SafeLearnPluginData = {
   // actually answered, and a wrong seed costs exactly one attempt, since it
   // decides only how long the very first login waits before giving up.
   refreshTokenLifetimeSeconds: 30 * 60,
+  // Off by default - only turned on while actively chasing a bug, not left
+  // logging token-adjacent detail for every install.
+  debugLogging: false,
 };
 
 /**
@@ -677,6 +683,15 @@ export default class SafeLearnPlugin extends Plugin {
     await this.saveData(this.data);
   }
 
+  /**
+   * Console logging for the login/directory-search path, gated behind the
+   * "Debug logging" setting so it stays off by default and can be switched on
+   * from the settings tab only while troubleshooting.
+   */
+  private debugLog(...args: unknown[]) {
+    if (this.data.debugLogging) console.log("[SafeLearn debug]", ...args);
+  }
+
   /** The configured safeLearn instance URL, or `null` if unset - callers never re-check for blank/whitespace themselves. */
   instanceUrl(): string | null {
     const trimmed = this.data.instanceUrl.trim();
@@ -1206,13 +1221,12 @@ export default class SafeLearnPlugin extends Plugin {
   /** Refreshes the access token first when it is missing or close to expiry. Called before every directory client call. */
   private async ensureAccessToken(): Promise<string | null> {
     if (this.accessToken && Date.now() < this.accessTokenExpiresAt) {
-      // TEMPORARY debug logging - remove once the directory-search bug is resolved.
-      console.log("[SafeLearn debug] ensureAccessToken: reusing cached token, expires in", Math.round((this.accessTokenExpiresAt - Date.now()) / 1000), "s");
+      this.debugLog("ensureAccessToken: reusing cached token, expires in", Math.round((this.accessTokenExpiresAt - Date.now()) / 1000), "s");
       return this.accessToken;
     }
-    console.log("[SafeLearn debug] ensureAccessToken: cached token missing/expired, refreshing");
+    this.debugLog("ensureAccessToken: cached token missing/expired, refreshing");
     const refreshed = await this.refreshAccessToken();
-    console.log("[SafeLearn debug] ensureAccessToken: refresh outcome", refreshed, "lastFailure", this.lastFailure);
+    this.debugLog("ensureAccessToken: refresh outcome", refreshed, "lastFailure", this.lastFailure);
     return refreshed ? this.accessToken : null;
   }
 
@@ -1235,18 +1249,18 @@ export default class SafeLearnPlugin extends Plugin {
   async searchDirectory(query: string): Promise<DirectorySearchResult> {
     const instanceUrl = this.instanceUrl();
     if (!instanceUrl) {
-      console.log("[SafeLearn debug] searchDirectory: refused, no instance URL configured");
+      this.debugLog("searchDirectory: refused, no instance URL configured");
       return { outcome: "refused", entries: [] };
     }
 
     const token = await this.ensureAccessToken();
     if (!token) {
-      console.log("[SafeLearn debug] searchDirectory: refused, ensureAccessToken returned no token");
+      this.debugLog("searchDirectory: refused, ensureAccessToken returned no token");
       return { outcome: "refused", entries: [] };
     }
 
     const url = `${stripTrailingSlash(instanceUrl)}/api/admin/directory/search?q=${encodeURIComponent(query)}`;
-    console.log("[SafeLearn debug] searchDirectory: requesting", url);
+    this.debugLog("searchDirectory: requesting", url);
     let response;
     try {
       response = await requestUrl({
@@ -1256,10 +1270,10 @@ export default class SafeLearnPlugin extends Plugin {
         throw: false,
       });
     } catch (error) {
-      console.log("[SafeLearn debug] searchDirectory: unreachable,", error);
+      this.debugLog("searchDirectory: unreachable,", error);
       return { outcome: "unreachable", entries: [] };
     }
-    console.log("[SafeLearn debug] searchDirectory: response status", response.status, "body", response.text);
+    this.debugLog("searchDirectory: response status", response.status, "body", response.text);
     if (response.status === 403) return { outcome: "refused", entries: [] };
     if (response.status >= 400) return { outcome: "failed", entries: [] };
 
@@ -1374,6 +1388,21 @@ class SafeLearnSettingTab extends PluginSettingTab {
             this.plugin.data.serverClientId = value;
             await this.plugin.saveSettings();
           })
+      );
+
+    // Off by default so a normal install never logs token-adjacent detail;
+    // switched on only while troubleshooting a login/directory-search problem.
+    new Setting(containerEl)
+      .setName("Debug logging")
+      .setDesc(
+        "Logs login and directory-search detail (token cache/refresh outcome, request URL, response " +
+          "status/body - never the token itself) to the developer console. Off by default."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.data.debugLogging).onChange(async (value) => {
+          this.plugin.data.debugLogging = value;
+          await this.plugin.saveSettings();
+        })
       );
 
     // Everything below depends on a configured instance, and stays silent -
