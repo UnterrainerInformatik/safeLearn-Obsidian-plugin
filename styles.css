@@ -461,9 +461,25 @@
   font-size: 0.85em;
 }
 
+/* The same line, while the instance is fetching its directory rather than
+   failing to answer: a wait, in the muted voice everything else that is merely
+   informational here uses, so it is not read as the error above. */
+.safelearn-directory-status-fetching {
+  color: var(--text-muted);
+}
+
 /* `DirectoryInfoModal`'s user/class totals - hidden (`el.hidden`) unless the
    one `searchDirectory("")` fetch resolved with an `ok` outcome. */
 .safelearn-directory-info-summary {
+  color: var(--text-muted);
+  font-size: 0.85em;
+  margin-bottom: 8px;
+}
+
+/* `DirectoryInfoModal`'s "Directory data" section: what the server holds, how
+   old it is, and whether it is being refetched right now. Always shown - "the
+   state cannot be determined" is itself one of the things it has to say. */
+.safelearn-directory-info-state {
   color: var(--text-muted);
   font-size: 0.85em;
   margin-bottom: 8px;

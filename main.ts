@@ -123,17 +123,99 @@ interface DirectoryEntry {
 }
 
 /**
- * What a directory search came back with, distinguishing the three ways it
- * can fail to reach `entries` from an actual, empty match: `"unreachable"` (a
+ * How far a directory fetch on the server has got, as its status endpoint
+ * reports it. `total` is `null` while the running phase does not know its own
+ * total yet - the server deliberately reports that rather than guessing one,
+ * so a percentage is simply not shown for that window.
+ */
+interface DirectoryFetchProgress {
+  phase: "idle" | "counting" | "entries" | "roles";
+  done: number;
+  total: number | null;
+}
+
+/**
+ * What the server holds and what it is doing about it, from
+ * `GET /api/admin/directory/status`. `entries`/`builtAt` are `null` when it
+ * holds nothing at all; `skipped` is a count of records that could not be
+ * retrieved while the held data was built, and never says which.
+ */
+interface DirectoryState extends DirectoryFetchProgress {
+  fetching: boolean;
+  entries: number | null;
+  builtAt: number | null;
+  skipped: number;
+}
+
+/**
+ * What a directory search came back with, distinguishing the ways it can fail
+ * to reach `entries` from an actual, empty match: `"unreachable"` (a
  * `requestUrl` exception - no route to the instance at all), `"refused"` (a
  * `403`, deliberately shown identically to not being logged in, per
- * `plugin-login-state`'s existing boundary - unchanged here), and `"failed"`
- * (any other `>=400`, chiefly the `502` a Keycloak-side failure raises).
- * `entries` is populated only for `"ok"`.
+ * `plugin-login-state`'s existing boundary - unchanged here), `"failed"`
+ * (any other `>=400`, chiefly the `502` a Keycloak-side failure raises), and
+ * `"fetching"` (a `202`: the server has no directory data yet and is building
+ * it, carrying how far along in `progress`). `entries` is populated only for
+ * `"ok"`.
+ *
+ * `"fetching"` is emphatically not a failure - a fetch of a realm this size
+ * takes minutes, and the whole point of the server answering rather than
+ * holding the request open is that the wait becomes something a person can see
+ * happening.
  */
 interface DirectorySearchResult {
-  outcome: "ok" | "unreachable" | "failed" | "refused";
+  outcome: "ok" | "unreachable" | "failed" | "refused" | "fetching";
   entries: DirectoryEntry[];
+  progress?: DirectoryFetchProgress;
+}
+
+/**
+ * How often anything waiting on a directory fetch asks the instance where it
+ * has got to. The endpoint reads process memory and answers a handful of
+ * numbers, so this costs the server nothing worth counting; what it must stay
+ * clear of is being mistaken for a progress *bar*'s refresh rate, which is why
+ * nothing here animates between readings.
+ */
+const DIRECTORY_POLL_MS = 2000;
+
+/** What each fetch phase is called where a person reads it. */
+const DIRECTORY_PHASE_LABELS: Record<DirectoryFetchProgress["phase"], string> = {
+  idle: "starting",
+  counting: "counting its entries",
+  entries: "retrieving entries",
+  roles: "resolving roles",
+};
+
+/** Whatever of a status/`202` body is actually shaped like progress - the rest is ignored rather than trusted. */
+function directoryProgressOf(body: unknown): DirectoryFetchProgress {
+  const source = (body ?? {}) as Record<string, unknown>;
+  const phase = source.phase;
+  return {
+    phase:
+      phase === "counting" || phase === "entries" || phase === "roles" || phase === "idle"
+        ? phase
+        : "idle",
+    done: typeof source.done === "number" ? source.done : 0,
+    total: typeof source.total === "number" ? source.total : null,
+  };
+}
+
+/**
+ * The one wording every waiting surface uses, so the picker, the info view and
+ * the "list classes" notice never describe the same fetch differently.
+ *
+ * The percentage is derived here rather than asked of the server: the server
+ * reports each phase's own raw figures precisely so that no single blended bar
+ * has to weight the two phases against each other, their relative cost being
+ * realm-specific.
+ */
+function directoryFetchProgressText(progress: DirectoryFetchProgress | null): string {
+  const label = DIRECTORY_PHASE_LABELS[progress?.phase ?? "idle"];
+  if (!progress || progress.total === null || progress.total <= 0) {
+    return `Fetching the directory — ${label}…`;
+  }
+  const percent = Math.min(100, Math.floor((progress.done / progress.total) * 100));
+  return `Fetching the directory — ${label} ${percent}% (${progress.done}/${progress.total})`;
 }
 
 /** The five role/group values that mean "everyone holding this role", not a class. Mirrors `NAMES_RESERVED_FOR_ROLES`, lowercased. */
@@ -462,6 +544,42 @@ function causeWithRemedy(cause: LoginFailure): string {
 /** The moment a login was started, in the reader's own clock - a duration would have to be recomputed to stay true, and nothing redraws it while it is read. */
 function timeOfDay(at: number): string {
   return new Date(at).toLocaleTimeString();
+}
+
+/**
+ * Roughly how long ago something happened, for the directory data's age.
+ *
+ * A duration rather than a clock time here, unlike `timeOfDay` above: the
+ * question a person asks of directory data is "is this current?", which a
+ * duration answers and a timestamp makes them do the arithmetic for. The
+ * surfaces that show it redraw it (the settings line on its own interval, the
+ * info view each time it opens), so it does not go quietly wrong the way the
+ * login's own never-redrawn line would.
+ */
+function howLongAgo(at: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} days ago`;
+}
+
+/**
+ * The directory's state in one line, for the settings tab and the info view
+ * alike - `null` where the server could not tell us (an instance too old to
+ * have the status endpoint, or one that could not be reached).
+ */
+function directoryStateSummary(state: DirectoryState | null): string {
+  if (!state) return "Directory state unknown.";
+  if (state.fetching) return directoryFetchProgressText(state);
+  if (state.entries === null || state.builtAt === null) return "No directory data held yet.";
+  return (
+    `${state.entries} entries, built ${howLongAgo(state.builtAt)}` +
+    (state.skipped > 0 ? `, ${state.skipped} record${state.skipped === 1 ? "" : "s"} skipped` : "")
+  );
 }
 
 /** The state and its particulars in one sentence: what a Notice announces and what the status bar carries as its tooltip. */
@@ -1275,6 +1393,13 @@ export default class SafeLearnPlugin extends Plugin {
     }
     this.debugLog("searchDirectory: response status", response.status, "body", response.text);
     if (response.status === 403) return { outcome: "refused", entries: [] };
+    // Checked ahead of the `>=400` line below because it is not a failure: the
+    // server has no directory data to match against yet and is building it, and
+    // the body carries how far along. Only a server old enough to predate
+    // `show-directory-fetch-progress` will never answer this way.
+    if (response.status === 202) {
+      return { outcome: "fetching", entries: [], progress: directoryProgressOf(response.json) };
+    }
     if (response.status >= 400) return { outcome: "failed", entries: [] };
 
     const body = response.json;
@@ -1285,24 +1410,71 @@ export default class SafeLearnPlugin extends Plugin {
     };
   }
 
-  /** Every class-like value the directory currently holds - the one fetch both "list classes" (6) and the class dropdown (7.2) build on. */
-  async classLikeValues(): Promise<{ outcome: DirectorySearchResult["outcome"]; classes: string[] }> {
-    const { outcome, entries } = await this.searchDirectory("");
-    return { outcome, classes: outcome === "ok" ? classLikeValues(entries) : [] };
+  /**
+   * What the instance holds and what it is doing about it, or `null` for
+   * "cannot be determined".
+   *
+   * Every non-`ok` response collapses into that `null`, the `404` an instance
+   * too old to carry this endpoint answers with included: a plugin released
+   * ahead of a server (which happens routinely - the Obsidian store takes
+   * roughly a day to reach other vaults) must degrade to saying it does not
+   * know, never to reporting a failure that isn't one.
+   */
+  async directoryStatus(): Promise<DirectoryState | null> {
+    const instanceUrl = this.instanceUrl();
+    if (!instanceUrl) return null;
+
+    const token = await this.ensureAccessToken();
+    if (!token) return null;
+
+    const url = `${stripTrailingSlash(instanceUrl)}/api/admin/directory/status`;
+    let response;
+    try {
+      response = await requestUrl({ url, method: "GET", headers: { Authorization: `Bearer ${token}` }, throw: false });
+    } catch (error) {
+      this.debugLog("directoryStatus: unreachable,", error);
+      return null;
+    }
+    this.debugLog("directoryStatus: response status", response.status, "body", response.text);
+    if (response.status >= 300) return null;
+
+    const body = response.json;
+    if (!body || typeof body !== "object") return null;
+    return {
+      ...directoryProgressOf(body),
+      fetching: body.fetching === true,
+      entries: typeof body.entries === "number" ? body.entries : null,
+      builtAt: typeof body.builtAt === "number" ? body.builtAt : null,
+      skipped: typeof body.skipped === "number" ? body.skipped : 0,
+    };
   }
 
   // ################### "List classes" command (6) ###################
 
   private async listClasses() {
-    const { outcome, classes } = await this.classLikeValues();
-    if (outcome === "unreachable") {
+    let result = await this.searchDirectory("");
+    if (result.outcome === "fetching") {
+      // The notice is the waiting surface here: there is no dialog to fill in,
+      // so the progress replaces its own text in place until the fetch resolves.
+      const notice = new Notice(directoryFetchProgressText(result.progress ?? null), 0);
+      const wait = new DirectoryFetchWait(this);
+      const waited = await wait.untilDone(
+        () => this.searchDirectory(""),
+        (progress) => notice.setMessage(directoryFetchProgressText(progress))
+      );
+      notice.hide();
+      if (!waited) return;
+      result = waited;
+    }
+    if (result.outcome === "unreachable") {
       new Notice("The directory could not be reached.", 0);
       return;
     }
-    if (outcome === "failed" || outcome === "refused") {
+    if (result.outcome !== "ok") {
       new Notice("The directory search failed.", 0);
       return;
     }
+    const classes = classLikeValues(result.entries);
     new Notice(
       classes.length > 0
         ? `Classes in the directory: ${classes.join(", ")}`
@@ -1313,11 +1485,82 @@ export default class SafeLearnPlugin extends Plugin {
 }
 
 /**
+ * Waits out a directory fetch on one surface's behalf: poll the instance's
+ * status every two seconds while it says a fetch is running, and re-issue the
+ * search once it says one is not.
+ *
+ * The *status* is what is polled, never the search: a search re-issued every
+ * two seconds would risk materializing and transferring some fourteen thousand
+ * entries per tick, where the status endpoint reads process memory and carries
+ * a handful of numbers.
+ *
+ * A status reporting no fetch while the caller is still being answered `202` is
+ * a fetch that died or was abandoned. The search is then re-issued - which
+ * starts a new one - exactly once more; a second `202` after that resolves as
+ * the surface's ordinary failure indication instead. That bound is what keeps a
+ * fetch that keeps dying from becoming an endless poll.
+ *
+ * `stop()` ends the wait for good, and is what a closing dialog calls so that
+ * nothing is left polling behind it.
+ */
+class DirectoryFetchWait {
+  private timer: number | undefined;
+  private stopped = false;
+
+  constructor(private readonly plugin: SafeLearnPlugin) {}
+
+  stop() {
+    this.stopped = true;
+    if (this.timer !== undefined) window.clearTimeout(this.timer);
+    this.timer = undefined;
+  }
+
+  private tick(): Promise<void> {
+    return new Promise((resolve) => {
+      this.timer = window.setTimeout(resolve, DIRECTORY_POLL_MS);
+    });
+  }
+
+  /**
+   * Resolves with the search's result once the fetch is over, or `null` when
+   * `stop()` ended the wait. `show` is called with each progress reading, so a
+   * surface renders the same figures this is deciding on.
+   */
+  async untilDone(
+    search: () => Promise<DirectorySearchResult>,
+    show: (progress: DirectoryFetchProgress | null) => void
+  ): Promise<DirectorySearchResult | null> {
+    let reissuedOnce = false;
+    for (;;) {
+      await this.tick();
+      if (this.stopped) return null;
+
+      const state = await this.plugin.directoryStatus();
+      if (this.stopped) return null;
+      if (state?.fetching) {
+        show(state);
+        continue;
+      }
+
+      const result = await search();
+      if (this.stopped) return null;
+      if (result.outcome !== "fetching") return result;
+      if (reissuedOnce) return { outcome: "failed", entries: [] };
+      reissuedOnce = true;
+      show(result.progress ?? null);
+    }
+  }
+}
+
+/**
  * The plugin's own settings: the safeLearn instance URL, its Keycloak realm,
  * and the login controls. See `design.md` for why Keycloak URL and realm are
  * settings of their own rather than derived from the instance URL.
  */
 class SafeLearnSettingTab extends PluginSettingTab {
+  /** The interval keeping the directory summary current, while this tab is the one on screen. */
+  private directoryPoll: number | undefined;
+
   constructor(
     app: App,
     private readonly plugin: SafeLearnPlugin
@@ -1328,6 +1571,10 @@ class SafeLearnSettingTab extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    // `display()` runs again on the instance-URL field's blur, and the elements
+    // the previous run's interval was writing into have just been emptied out
+    // from under it.
+    this.stopDirectoryPoll();
 
     new Setting(containerEl)
       .setName("safeLearn instance URL")
@@ -1441,10 +1688,44 @@ class SafeLearnSettingTab extends PluginSettingTab {
         .onClick(() => void this.plugin.login())
     );
 
+    // Gated on exactly what the "Show directory info" command is gated on, so
+    // the two entry points appear and disappear together - the palette is
+    // simply not where somebody who does not already know this view exists
+    // will find it.
+    if (!this.plugin.hasDirectoryRole()) return;
+
+    const directory = new Setting(containerEl)
+      .setName("Directory")
+      .setDesc("Directory state unknown.")
+      .addButton((button) =>
+        button.setButtonText("Show directory info").onClick(() => new DirectoryInfoModal(this.plugin).open())
+      );
+    directory.settingEl.addClass("safelearn-directory-setting");
+
+    // Only this one line's text is rewritten, never the tab: calling `display()`
+    // on a timer would drop the focus out of whichever field was being typed
+    // into, the same reason the instance-URL field refreshes on blur instead of
+    // per keystroke.
+    const refresh = async () => {
+      directory.setDesc(directoryStateSummary(await this.plugin.directoryStatus()));
+    };
+    void refresh();
+    this.directoryPoll = window.setInterval(() => void refresh(), DIRECTORY_POLL_MS);
+
     // Nothing redraws this tab from here. Every control above changes a fact
     // the state is derived from, and each of those calls the one notifier,
     // which redraws this tab among the rest. A `this.display()` next to a
     // control would be the arrangement that let four of five paths go stale.
+  }
+
+  /** Obsidian calls this when the tab stops being the one on screen - nothing should be polling for a page nobody is reading. */
+  hide() {
+    this.stopDirectoryPoll();
+  }
+
+  private stopDirectoryPoll() {
+    if (this.directoryPoll !== undefined) window.clearInterval(this.directoryPoll);
+    this.directoryPoll = undefined;
   }
 }
 
@@ -3063,6 +3344,9 @@ function reportReservedNames(names: string[]) {
  * before `plugin-admin-directory-ui` - see `tasks.md` #8.
  */
 class NameListModal extends Modal {
+  /** The wait on a running directory fetch, while one is being waited on - ended in `onClose`, per `tasks.md` #5.4. */
+  private fetchWait: DirectoryFetchWait | null = null;
+
   constructor(
     private readonly plugin: SafeLearnPlugin,
     private readonly title: string,
@@ -3178,8 +3462,20 @@ class NameListModal extends Modal {
     // it (with the checked set cleared) without re-running a search.
     let lastEntries: DirectoryEntry[] = [];
 
-    const setStatus = (outcome: DirectorySearchResult["outcome"]) => {
-      if (outcome === "unreachable") {
+    // A fetch in progress is shown in the same line, but never in the same
+    // terms: it carries its own class so it reads as a wait rather than as the
+    // error the other two are, which is the distinction `plugin-directory-search`
+    // asks for between "still fetching", "unreachable" and "failed".
+    const setStatus = (
+      outcome: DirectorySearchResult["outcome"],
+      progress: DirectoryFetchProgress | null = null
+    ) => {
+      status.removeClass("safelearn-directory-status-fetching");
+      if (outcome === "fetching") {
+        status.setText(directoryFetchProgressText(progress));
+        status.addClass("safelearn-directory-status-fetching");
+        status.hidden = false;
+      } else if (outcome === "unreachable") {
         status.setText("The directory could not be reached.");
         status.hidden = false;
       } else if (outcome === "failed") {
@@ -3262,11 +3558,58 @@ class NameListModal extends Modal {
       };
     };
 
+    // "fetching" outranks a plain refusal (there is something to show, and to
+    // wait on) but never a failure or an unreachable instance: those say
+    // something about this instance that a wait would paper over.
     const outcomeRank: Record<DirectorySearchResult["outcome"], number> = {
       ok: 0,
       refused: 1,
-      failed: 2,
-      unreachable: 3,
+      fetching: 2,
+      failed: 3,
+      unreachable: 4,
+    };
+
+    /**
+     * Waits out the running fetch and then does `whenDone`, replacing any wait
+     * already under way so two of them can never render over each other.
+     * `searchDirectory("")` is the probe rather than this modal's own merged
+     * search: it is one call, and it is the same call the modal makes when it
+     * opens.
+     */
+    const waitOutFetch = (
+      progress: DirectoryFetchProgress | null,
+      whenDone: (result: DirectorySearchResult) => void | Promise<void>
+    ) => {
+      setStatus("fetching", progress);
+      this.fetchWait?.stop();
+      const wait = new DirectoryFetchWait(this.plugin);
+      this.fetchWait = wait;
+      void wait
+        .untilDone(
+          () => this.plugin.searchDirectory(""),
+          (advanced) => setStatus("fetching", advanced)
+        )
+        .then(async (result) => {
+          if (this.fetchWait !== wait || result === null) return;
+          this.fetchWait = null;
+          if (result.outcome !== "ok") {
+            setStatus(result.outcome, result.progress ?? null);
+            return;
+          }
+          await whenDone(result);
+        });
+    };
+
+    /**
+     * What a completed `searchDirectory("")` makes of the strip: the class
+     * filter's options, and the reachability line. Whichever wait finishes
+     * calls this, so a picker that was opened mid-fetch ends up with the same
+     * class list as one opened after it - the person never has to reopen it.
+     */
+    const applyDirectory = (result: DirectorySearchResult) => {
+      allClasses = result.outcome === "ok" ? classLikeValues(result.entries) : [];
+      setStatus(result.outcome);
+      renderClassOptions();
     };
 
     // One `searchDirectory` call per checked class, unioned and de-duplicated
@@ -3282,6 +3625,20 @@ class NameListModal extends Modal {
         (worst, current) => (outcomeRank[current.outcome] > outcomeRank[worst] ? current.outcome : worst),
         "ok" as DirectorySearchResult["outcome"]
       );
+      // The instance has nothing to search yet. Show the fetch, and re-run this
+      // very search once it finishes, so the picker fills in without the person
+      // retyping anything.
+      if (outcome === "fetching") {
+        waitOutFetch(outcomes.find((one) => one.outcome === "fetching")?.progress ?? null, async (result) => {
+          // The class filter is loaded here too: a query typed during the wait
+          // supersedes the wait the modal started when it opened, and the class
+          // options that wait was going to fill in must not be lost with it.
+          applyDirectory(result);
+          await runSearch();
+        });
+        return;
+      }
+
       setStatus(outcome);
 
       // An unreachable instance or a failed request is additive information,
@@ -3317,13 +3674,15 @@ class NameListModal extends Modal {
     // Fetched once per modal open, not per keystroke - see `tasks.md` #7.2 of
     // the prior change. The one fetch the reachability signal piggybacks on -
     // `design.md` - no second request is added for it.
-    const { outcome, classes } = await this.plugin.classLikeValues();
-    allClasses = classes;
-    setStatus(outcome);
-    renderClassOptions();
+    const initial = await this.plugin.searchDirectory("");
+    if (initial.outcome === "fetching") waitOutFetch(initial.progress ?? null, applyDirectory);
+    else applyDirectory(initial);
   }
 
   onClose() {
+    // A dialog nobody is looking at must leave nothing polling behind it.
+    this.fetchWait?.stop();
+    this.fetchWait = null;
     this.contentEl.empty();
   }
 }
@@ -3347,6 +3706,9 @@ function entryHoldsTeacherOrAdmin(entry: DirectoryEntry): boolean {
  * of anything outside itself.
  */
 class DirectoryInfoModal extends Modal {
+  /** The wait on a running directory fetch, while one is being waited on - ended in `onClose`, per `tasks.md` #5.4. */
+  private fetchWait: DirectoryFetchWait | null = null;
+
   constructor(private readonly plugin: SafeLearnPlugin) {
     super(plugin.app);
   }
@@ -3366,6 +3728,14 @@ class DirectoryInfoModal extends Modal {
     // soon as the one `searchDirectory("")` fetch resolves".
     const summary = contentEl.createDiv({ cls: "safelearn-directory-info-summary" });
     summary.hidden = true;
+
+    // The state of the data the rest of the view is built from: how much of it
+    // there is, how old it is, and what was lost building it. Shown in the same
+    // terms whether or not a fetch is running, so "fresh" and "held since
+    // yesterday" are told apart at a glance rather than assumed.
+    contentEl.createEl("h4", { text: "Directory data" });
+    const state = contentEl.createDiv({ cls: "safelearn-directory-info-state" });
+    state.setText("Directory state unknown.");
 
     contentEl.createEl("h4", { text: "Teachers" });
     const teachers = contentEl.createEl("ul", { cls: "safelearn-directory-info-list" });
@@ -3402,33 +3772,73 @@ class DirectoryInfoModal extends Modal {
       renderResults(matches);
     });
 
-    const { outcome, entries: fetched } = await this.plugin.searchDirectory("");
-    if (outcome === "unreachable") {
-      status.setText("The directory could not be reached.");
-      status.hidden = false;
-    } else if (outcome === "failed" || outcome === "refused") {
-      status.setText("The directory search failed.");
-      status.hidden = false;
-    } else {
-      entries = fetched;
+    /** Everything below the status line, filled in from one completed fetch - run once, whenever that fetch actually resolves. */
+    const fillIn = (result: DirectorySearchResult) => {
+      if (result.outcome === "unreachable") {
+        status.setText("The directory could not be reached.");
+        status.hidden = false;
+      } else if (result.outcome !== "ok") {
+        status.setText("The directory search failed.");
+        status.hidden = false;
+      } else {
+        status.hidden = true;
+        status.removeClass("safelearn-directory-status-fetching");
+        entries = result.entries;
+      }
+
+      const classValues = classLikeValues(entries);
+      if (result.outcome === "ok") {
+        summary.setText(`${entries.length} users, ${classValues.length} classes`);
+        summary.hidden = false;
+      }
+
+      teachers.empty();
+      classes.empty();
+      for (const entry of entries.filter(entryHoldsTeacherOrAdmin)) {
+        teachers.createEl("li", { text: entry.name });
+      }
+      for (const value of classValues) {
+        classes.createEl("li", { text: value });
+      }
+      renderResults(entries);
+    };
+
+    /** The "Directory data" section - its own call, so it says something even while the search is still waiting on a fetch. */
+    const showState = async () => {
+      state.setText(directoryStateSummary(await this.plugin.directoryStatus()));
+    };
+    void showState();
+
+    const initial = await this.plugin.searchDirectory("");
+    if (initial.outcome !== "fetching") {
+      fillIn(initial);
+      return;
     }
 
-    const classValues = classLikeValues(entries);
-    if (outcome === "ok") {
-      summary.setText(`${entries.length} users, ${classValues.length} classes`);
-      summary.hidden = false;
-    }
-
-    for (const entry of entries.filter(entryHoldsTeacherOrAdmin)) {
-      teachers.createEl("li", { text: entry.name });
-    }
-    for (const value of classValues) {
-      classes.createEl("li", { text: value });
-    }
-    renderResults(entries);
+    // A fetch in progress is a wait, not a failure: the status line carries the
+    // fetch's own wording and its own class, and the sections below stay empty
+    // until it resolves - at which point they fill in, with the view still open.
+    status.setText(directoryFetchProgressText(initial.progress ?? null));
+    status.addClass("safelearn-directory-status-fetching");
+    status.hidden = false;
+    this.fetchWait = new DirectoryFetchWait(this.plugin);
+    const waited = await this.fetchWait.untilDone(
+      () => this.plugin.searchDirectory(""),
+      (progress) => {
+        status.setText(directoryFetchProgressText(progress));
+        state.setText(directoryFetchProgressText(progress));
+      }
+    );
+    this.fetchWait = null;
+    if (waited === null) return;
+    fillIn(waited);
+    await showState();
   }
 
   onClose() {
+    // A dialog nobody is looking at must leave nothing polling behind it.
+    this.fetchWait?.stop();
+    this.fetchWait = null;
     this.contentEl.empty();
   }
 }
