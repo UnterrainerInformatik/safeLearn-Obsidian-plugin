@@ -441,8 +441,8 @@
 }
 
 /*
- * The directory search strip `NameListModal` gains above its textarea where a
- * login is held (`plugin-admin-directory-ui`). Obsidian's own theme
+ * The directory picker `NameListModal` is made of where a login is held
+ * (`plugin-admin-directory-ui`). Obsidian's own theme
  * variables throughout, rather than variables of this file's own: it sits in
  * a native dialog, not in decorated document text, and should look like the
  * rest of that dialog.
@@ -537,9 +537,9 @@
 }
 
 /* A plain clickable `<div>`, styled to read as actionable without being a
-   `<button>` - `design.md`, "Results: checkboxes plus one non-`<button>`
-   'Add selected' control". */
-.safelearn-directory-add-selected {
+   `<button>` - the modal's confirmation is its first and only button, and the
+   harness addresses it as such. */
+.safelearn-directory-add-visible {
   margin-bottom: 8px;
   padding: 4px 8px;
   text-align: center;
@@ -549,7 +549,43 @@
   cursor: pointer;
 }
 
-.safelearn-directory-add-selected:hover {
+.safelearn-directory-add-visible:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+/* Who has been chosen so far, below what is on offer - what the dialog will
+   actually return, and the only place a person chosen under a filter that no
+   longer shows them can still be seen and taken back out. */
+.safelearn-directory-chosen {
+  margin-bottom: 8px;
+}
+
+.safelearn-directory-chosen-count {
+  color: var(--text-muted);
+  font-size: 0.85em;
+  margin-bottom: 4px;
+}
+
+/* Its own scroll box, like the results list above it: a class taken over whole
+   is thirty rows, and the confirmation must not be pushed off the dialog by
+   them. */
+.safelearn-directory-chosen-list {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+}
+
+.safelearn-directory-chosen-list:empty {
+  display: none;
+}
+
+.safelearn-directory-chosen-name {
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.safelearn-directory-chosen-name:hover {
   background-color: var(--background-modifier-hover);
 }
 

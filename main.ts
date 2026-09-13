@@ -3347,6 +3347,19 @@ class NameListModal extends Modal {
   /** The wait on a running directory fetch, while one is being waited on - ended in `onClose`, per `tasks.md` #5.4. */
   private fetchWait: DirectoryFetchWait | null = null;
 
+  /**
+   * Who has been chosen from the picker: insertion order, deduplicated on the
+   * trimmed exact name. This is what `confirm` returns where a picker is
+   * shown, in place of both the marked-result set and the textarea that set
+   * used to feed.
+   *
+   * Insertion order because the commands write one section per name in the
+   * order they were given; the trimmed exact name because that is what the
+   * picker offers and what the document carries, and folding it here would
+   * only have to be undone when writing.
+   */
+  private readonly chosenNames: string[] = [];
+
   constructor(
     private readonly plugin: SafeLearnPlugin,
     private readonly title: string,
@@ -3358,63 +3371,88 @@ class NameListModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.createEl("h3", { text: this.title });
-    contentEl.createEl("p", { text: "One name per line. Paste a class list straight in." });
 
-    // Declared before the search strip is built, and assigned after: the
-    // strip's result items append into this field, and it has to exist by
-    // the time a person can click one, not by the time this function returns.
-    let input: HTMLTextAreaElement;
-    const appendName = (name: string) => {
-      const trimmed = name.trim();
-      if (trimmed === "") return;
-      const separator = input.value.length > 0 && !input.value.endsWith("\n") ? "\n" : "";
-      input.value += separator + trimmed;
+    // Where the picker is shown it is the whole answer: a name the directory
+    // has no entry for is written into the document afterwards rather than
+    // typed here. Where it is not, this dialog is the field it always was.
+    const showsPicker = this.plugin.hasLogin();
+    contentEl.createEl("p", {
+      text: showsPicker
+        ? "Click a person to choose them. Click them again in the chosen list to take them back out."
+        : "One name per line. Paste a class list straight in.",
+    });
+
+    // The picker and the typed/pasted field get a home each, in the order they
+    // read in, before either is filled: the field is built on demand (below),
+    // and a container standing in for it keeps it out from under the
+    // confirmation when it is.
+    const pickerHome = contentEl.createDiv({ cls: "safelearn-name-list-picker" });
+    const typedHome = contentEl.createDiv({ cls: "safelearn-name-list-typed" });
+
+    let input: HTMLTextAreaElement | null = null;
+
+    /**
+     * Builds the typed/pasted field, once.
+     *
+     * Called outright where no picker is shown, and from the picker where it
+     * reports `unreachable` or `failed`: a command must not leave a person
+     * with no way to name anybody at all (`plugin-authoring-commands`).
+     */
+    const revealTypedList = () => {
+      if (input) return;
+      input = typedHome.createEl("textarea");
+      input.rows = 10;
+      input.style.width = "100%";
+      input.focus();
     };
 
-    if (this.plugin.hasLogin()) void this.buildDirectorySearch(contentEl, appendName);
-
-    input = contentEl.createEl("textarea");
-    input.rows = 10;
-    input.style.width = "100%";
+    if (showsPicker) void this.buildDirectorySearch(pickerHome, revealTypedList);
+    else revealTypedList();
 
     const confirm = () => {
-      const names = input.value
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line !== "");
+      // Both sources where both exist: a picker that goes unreachable after
+      // somebody has already chosen people must not drop them for having
+      // revealed the field. Deduplicated the way the chosen list itself is.
+      const names: string[] = [];
+      for (const candidate of [...this.chosenNames, ...(input?.value.split("\n") ?? [])]) {
+        const trimmed = candidate.trim();
+        if (trimmed !== "" && !names.includes(trimmed)) names.push(trimmed);
+      }
       this.close();
       if (names.length > 0) this.onList(names);
     };
 
-    // Enter belongs to the list; the whole point of the field is more than one
-    // line in it.
-    input.addEventListener("keydown", (event) => {
+    // On the dialog rather than on the field: where the picker is shown there
+    // is no field to carry it, and Ctrl/Cmd+Enter has to confirm either way
+    // (`plugin-authoring-commands`). A plain Enter stays unhandled here, so it
+    // goes on belonging to the list inside the textarea where that is shown.
+    contentEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) confirm();
     });
 
     // The confirmation in its container, as in `ColumnCountModal`: the two
-    // dialogs differ in the field they carry and in nothing else.
+    // dialogs differ in what they ask with and in nothing else.
     contentEl
       .createEl("div", { cls: "modal-button-container" })
       .createEl("button", { text: "Insert" })
       .addEventListener("click", confirm);
-
-    input.focus();
   }
 
   /**
    * The reachability status line, the search input, the searchable class
-   * filter, the results list and its "Add selected" control - everything
-   * above the textarea.
+   * filter, the results list, its "Add visible" control, and the list of who
+   * has been chosen so far - the whole of the dialog where a login is held.
    *
-   * Nothing here is a `<button>`: `answerNameList` and `dialogBoxes`
-   * (`test/obsidian/harness.js`) find the field and the confirmation by
-   * querying the modal for its first input/textarea and its first button,
-   * and a button here would be found first and break both. `.safelearn-directory-result`
-   * and the "Add selected" control follow the same clickable-`<div>` pattern
-   * for the same reason.
+   * Nothing here is a `<button>`: the modal's confirmation is its first and
+   * only one, which is how `answerNameList` and `dialogBoxes`
+   * (`test/obsidian/harness.js`) address it, and a button here would be found
+   * first and break both. `.safelearn-directory-result`, the chosen rows and
+   * the "Add visible" control are all clickable `<div>`s for that reason.
+   *
+   * `revealTypedList` is the way out where the directory cannot answer at
+   * all: see `NameListModal.onOpen`.
    */
-  private async buildDirectorySearch(contentEl: HTMLElement, appendName: (name: string) => void) {
+  private async buildDirectorySearch(contentEl: HTMLElement, revealTypedList: () => void) {
     const container = contentEl.createDiv({ cls: "safelearn-directory-search" });
 
     // Hidden while the directory is reachable or the request was refused (the
@@ -3442,10 +3480,19 @@ class NameListModal extends Modal {
     const results = contentEl.createDiv({ cls: "safelearn-directory-results" });
 
     // A plain clickable `<div>`, following `.safelearn-directory-result`'s own
-    // pattern - never a `<button>`. `design.md` - "Results: checkboxes plus
-    // one non-`<button>` 'Add selected' control".
-    const addSelected = contentEl.createDiv({ cls: "safelearn-directory-add-selected" });
-    addSelected.setText("Add selected");
+    // pattern - never a `<button>`. It takes over exactly what the result list
+    // is showing, which is the one action a narrowed-to-a-class picker exists
+    // for.
+    const addVisible = contentEl.createDiv({ cls: "safelearn-directory-add-visible" });
+    addVisible.setText("Add visible");
+
+    // Who has been chosen, below what is on offer: the list the dialog will
+    // actually return, including people chosen under a filter that no longer
+    // shows them. Its own scroll box, so a long selection never pushes the
+    // confirmation out of view (`design.md`, Risks).
+    const chosen = contentEl.createDiv({ cls: "safelearn-directory-chosen" });
+    const chosenCount = chosen.createDiv({ cls: "safelearn-directory-chosen-count" });
+    const chosenList = chosen.createDiv({ cls: "safelearn-directory-chosen-list" });
 
     // The full, unfiltered set of class names from the one `classLikeValues()`
     // fetch below - `classFilterQuery` narrows what is *shown*, it does not
@@ -3454,13 +3501,45 @@ class NameListModal extends Modal {
     // Which classes are currently checked, surviving a re-render of the
     // checkbox list itself (`tasks.md` #3.4).
     const checkedClasses = new Set<string>();
-    // Which rendered results are currently checked, keyed by display name so
-    // a re-render from a new search preserves a name marked-but-not-yet-added
-    // rather than silently dropping it - `design.md`, Risks.
-    const checkedResultNames = new Set<string>();
-    // What the results list currently shows, so "Add selected" can re-render
-    // it (with the checked set cleared) without re-running a search.
+    // What the results list currently shows, which is exactly what "Add
+    // visible" takes over - the union of every checked class, not the last
+    // search's full result and not the whole directory.
     let lastEntries: DirectoryEntry[] = [];
+
+    /**
+     * Shows who is chosen, and how many - a count so a selection carried over
+     * from an earlier filter is legible at a glance rather than only by
+     * scrolling the list it sits in.
+     */
+    const renderChosen = () => {
+      chosenCount.setText(
+        this.chosenNames.length === 0
+          ? "Nobody chosen yet."
+          : `${this.chosenNames.length} ${this.chosenNames.length === 1 ? "person" : "people"} chosen.`
+      );
+      chosenList.empty();
+      for (const name of this.chosenNames) {
+        const row = chosenList.createDiv({ cls: "safelearn-directory-chosen-name" });
+        // The same attribute the result rows carry, for the same reason: a
+        // check finds a specific person without depending on how the row is
+        // worded around them.
+        row.setAttribute("data-safelearn-name", name);
+        row.setText(name);
+        row.addEventListener("click", () => {
+          const at = this.chosenNames.indexOf(name);
+          if (at >= 0) this.chosenNames.splice(at, 1);
+          renderChosen();
+        });
+      }
+    };
+
+    /** Moves one person into the chosen list, or leaves them there once if they already are. */
+    const choose = (name: string) => {
+      const trimmed = name.trim();
+      if (trimmed === "" || this.chosenNames.includes(trimmed)) return;
+      this.chosenNames.push(trimmed);
+      renderChosen();
+    };
 
     // A fetch in progress is shown in the same line, but never in the same
     // terms: it carries its own class so it reads as a wait rather than as the
@@ -3478,9 +3557,11 @@ class NameListModal extends Modal {
       } else if (outcome === "unreachable") {
         status.setText("The directory could not be reached.");
         status.hidden = false;
+        revealTypedList();
       } else if (outcome === "failed") {
         status.setText("The directory search failed.");
         status.hidden = false;
+        revealTypedList();
       } else {
         status.hidden = true;
       }
@@ -3496,26 +3577,13 @@ class NameListModal extends Modal {
         // it are formatted for reading.
         item.setAttribute("data-safelearn-name", entry.name);
 
-        const checkbox = item.createEl("input", {
-          type: "checkbox",
-          cls: "safelearn-directory-result-checkbox",
-        });
-        checkbox.checked = checkedResultNames.has(entry.name);
-        checkbox.addEventListener("change", () => {
-          if (checkbox.checked) checkedResultNames.add(entry.name);
-          else checkedResultNames.delete(entry.name);
-        });
-
         item.createSpan({ text: `${entry.name} — ${Object.keys(entry.roles).join(", ") || "no roles"}` });
 
-        // Check-to-mark, replacing the old click-to-append: a click anywhere
-        // on the row but the checkbox itself flips it, so the row stays one
-        // click no matter where on it a person clicks.
-        item.addEventListener("click", (event) => {
-          if (event.target === checkbox) return;
-          checkbox.checked = !checkbox.checked;
-          checkbox.dispatchEvent(new Event("change"));
-        });
+        // The whole row moves that person down into the chosen list. There is
+        // no mark to keep in step with anything: what has been chosen lives in
+        // `chosenNames` alone, so a re-render from a new search leaves an
+        // already-chosen person chosen, and once.
+        item.addEventListener("click", () => choose(entry.name));
       }
     };
 
@@ -3665,11 +3733,20 @@ class NameListModal extends Modal {
       classFilterDebounceHandle = window.setTimeout(() => renderClassOptions(), 300);
     });
 
-    addSelected.addEventListener("click", () => {
-      for (const name of checkedResultNames) appendName(name);
-      checkedResultNames.clear();
-      renderResults(lastEntries);
+    // Exactly what the result list is showing: nobody when it is showing
+    // nobody, which loses nothing already chosen, and everybody it is showing
+    // otherwise, in one action.
+    addVisible.addEventListener("click", () => {
+      for (const entry of lastEntries) choose(entry.name);
     });
+
+    // An empty chosen list still says so, from the moment the dialog opens.
+    renderChosen();
+
+    // The search field carries the focus the textarea used to, so the dialog
+    // opens ready to be typed into and Ctrl/Cmd+Enter reaches the handler on
+    // the modal's content element.
+    query.focus();
 
     // Fetched once per modal open, not per keystroke - see `tasks.md` #7.2 of
     // the prior change. The one fetch the reachability signal piggybacks on -
