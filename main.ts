@@ -3890,10 +3890,16 @@ function lessonDates(start: Date, end: Date, weekdays: ReadonlySet<number>): Dat
  * One subject heading out of the two halves the dialog asks for.
  *
  * The headings in the corpus are a subject over the teachers who take it -
- * `0WMC<br>(UNTEG)` - and that `<br>` is markup in the middle of a heading
- * nobody should have to know about to lay out a semester. So the dialog asks
- * for the two halves and this puts them together; what a person types is what
- * they would say out loud.
+ * `0WMC<br>(UNTEG)` - and both that `<br>` and the parentheses around the lower
+ * half are markup nobody should have to know about to lay out a semester. So
+ * the dialog asks for the two halves and this puts them together, brackets and
+ * all; what a person types is what they would say out loud.
+ *
+ * A teacher half that already carries its parentheses is left as it stands,
+ * because somebody who typed them out of habit meant one pair and not two. It
+ * counts as carrying them when it begins with `(` and ends with `)`: a test for
+ * a bracket anywhere in it would leave `(UNTEG+LANDH` alone, which is a half
+ * missing its closing bracket rather than a bracketed one.
  *
  * Either half alone is that half, not a heading with an empty line in it: a
  * `<br>` written above nothing leaves a heading that sits oddly high in its
@@ -3901,7 +3907,9 @@ function lessonDates(start: Date, end: Date, weekdays: ReadonlySet<number>): Dat
  */
 function subjectHeading(subject: string, teachers: string): string {
   const over = subject.trim();
-  const under = teachers.trim();
+  const given = teachers.trim();
+  const under =
+    given === "" || (given.startsWith("(") && given.endsWith(")")) ? given : `(${given})`;
   if (over === "" || under === "") return over === "" ? under : over;
   return `${over}<br>${under}`;
 }
@@ -3933,17 +3941,28 @@ function subjectHeadings(entries: string[]): string[] {
  * table editor would reformat an unaligned table into the first time somebody
  * edited it - so writing it unaligned only means the first edit produces a large
  * diff of pure whitespace.
+ *
+ * `weekdayColumn` says whether the class meets on more than one weekday. Where
+ * it does not, that column would carry the same three letters down the whole
+ * semester - width in an already wide table, saying nothing the date beside it
+ * does not - so it is left out. The widths, the delimiter row and the marker
+ * are all derived from `headings`, so a column never put in there disappears
+ * from all three.
  */
-function semesterTableLines(dates: Date[], subjects: string[]): string[] {
+function semesterTableLines(
+  dates: Date[],
+  subjects: string[],
+  weekdayColumn: boolean
+): string[] {
   // The marker column's heading is empty. Markdown has no cell background, so
   // which lesson is next is said by a character in a column of its own - and a
   // column holding one `x` needs no name above it.
-  const headings = ["", "Day", "Date", ...subjects, "Info"];
+  const headings = ["", ...(weekdayColumn ? ["Day"] : []), "Date", ...subjects, "Info"];
   const blankSubjects = subjects.map(() => "");
   const rows = dates.map((date, index) => [
     // At the moment the table is generated, the next lesson is its first row.
     index === 0 ? "x" : "",
-    WEEKDAY_SHORT_NAMES[date.getDay()],
+    ...(weekdayColumn ? [WEEKDAY_SHORT_NAMES[date.getDay()]] : []),
     `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}.${date.getFullYear()}`,
     ...blankSubjects,
     "",
@@ -3997,7 +4016,12 @@ function insertSemesterTable(
   // nothing is lost. `insertSectionsPerName` faces this and does the same.
   editor.setCursor(editor.getCursor("from"));
 
-  const table = semesterTableLines(dates, subjectHeadings(subjects));
+  // Whether the weekday column is written follows from what was ticked, not
+  // from the weekdays the generated dates happen to contain: a Mon+Thu table
+  // over a span too short to hold a Thursday is still a table for two weekdays,
+  // and a rule read off the dialog is one a person can predict before pressing
+  // Generate.
+  const table = semesterTableLines(dates, subjectHeadings(subjects), weekdays.size > 1);
   // A blank line above the table unless there is one already. `writeLines`
   // guarantees the insertion begins on a line of its own, which is not the same
   // thing: a table directly beneath a paragraph can be read as part of that
@@ -4071,16 +4095,18 @@ class SemesterTableModal extends Modal {
      * A row is added as the last one is filled in, so the dialog is as long as
      * the class it is describing and nobody counts empty rows before starting.
      * The two halves are written into one heading by `subjectHeading`; the
-     * `<br>` between them is markup, and asking a person to type markup into a
-     * dialog is asking them to know about a detail of the format the dialog
-     * exists to spare them.
+     * `<br>` between them and the parentheses around the lower half are markup,
+     * and asking a person to type markup into a dialog is asking them to know
+     * about a detail of the format the dialog exists to spare them. Which is
+     * why the placeholder reads `UNTEG` and not `(UNTEG)`: the brackets are the
+     * plugin's to write.
      */
     const addSubjectRow = () => {
       const row = subjectRows.createDiv({ cls: "safelearn-semester-subject" });
       const subject = row.createEl("input", { type: "text" });
       subject.placeholder = "0WMC";
       const teachers = row.createEl("input", { type: "text" });
-      teachers.placeholder = "(UNTEG)";
+      teachers.placeholder = "UNTEG";
       subjects.push({ subject, teachers });
 
       for (const field of [subject, teachers]) {
