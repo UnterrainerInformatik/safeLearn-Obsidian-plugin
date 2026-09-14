@@ -604,6 +604,43 @@
   color: var(--text-muted);
 }
 
+/* `SemesterTableModal`'s fields.
+ *
+ * A label above each one rather than beside it: the dialog asks four things,
+ * two of them a date picker whose width is the browser's to decide, and a
+ * left-hand label column would be as wide as the longest of the four labels for
+ * all of them.
+ */
+.safelearn-semester-label {
+  display: block;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+/* The seven ticks in a row that wraps, rather than a column seven tall that
+   pushes the confirmation off a short dialog. */
+.safelearn-semester-weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+/* One subject column per line, as the two halves of its heading: the subject
+   and who takes it. Equal widths, because neither half is the more important
+   one and a row of two unequal fields reads as one field with something
+   appended. */
+.safelearn-semester-subject {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.safelearn-semester-subject input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 /*
  * The login's state, in the two places a person reads it.
  *

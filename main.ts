@@ -704,7 +704,7 @@ export default class SafeLearnPlugin extends Plugin {
         // Every command, offered in whichever menu is passed in. A section is
         // what an entry needs only while it stands among Obsidian's own and
         // other plugins': inside a menu of our own it would buy nothing but
-        // separators between the five.
+        // separators between them.
         const offerAll = (target: Menu, section: string | null) => {
           for (const command of AUTHORING_COMMANDS) {
             target.addItem((entry) => {
@@ -718,9 +718,10 @@ export default class SafeLearnPlugin extends Plugin {
         };
 
         // Where nothing can be nested, the menu this plugin builds is the one
-        // it built before this change: the five standing together in a section
-        // of their own. Asked before anything is added rather than discovered
-        // halfway through - an entry that opens nothing is not that menu.
+        // it built before this change: the commands standing together in a
+        // section of their own. Asked before anything is added rather than
+        // discovered halfway through - an entry that opens nothing is not that
+        // menu.
         if (!canNestMenus()) {
           offerAll(menu, MENU_SECTION);
           return;
@@ -733,7 +734,7 @@ export default class SafeLearnPlugin extends Plugin {
           item
             // A section of its own is how the entry says where it belongs among
             // Obsidian's groups rather than landing wherever the order of
-            // subscription put it. Asked of the one entry now, not of five.
+            // subscription put it. Asked of the one entry now, not of each.
             .setSection(MENU_SECTION)
             .setTitle(MENU_TITLE)
             .setIcon(MENU_ICON);
@@ -3070,6 +3071,19 @@ const AUTHORING_COMMANDS: AuthoringCommand[] = [
     run: (editor) => insertFragment(editor),
   },
   {
+    // A semester of dates, typed out by hand today. It is the part of the table
+    // with no judgement in it, so it is the part a command can take over.
+    id: "insert-semester-table",
+    name: "Semester table…",
+    // What the table is about. `table` would name the container while saying
+    // nothing about a semester of dates.
+    icon: "calendar-days",
+    run: (editor, plugin) =>
+      new SemesterTableModal(plugin.app, (start, end, weekdays, subjects) =>
+        insertSemesterTable(editor, start, end, weekdays, subjects)
+      ).open(),
+  },
+  {
     id: "insert-sections-per-name",
     name: "Restricted section per name…",
     // It is about who there is.
@@ -3761,6 +3775,388 @@ class NameListModal extends Modal {
     this.fetchWait?.stop();
     this.fetchWait = null;
     this.contentEl.empty();
+  }
+}
+
+/**
+ * The weekday names the `Day` column carries, indexed by `Date.getDay()`.
+ *
+ * A fixed English list, not `toLocaleDateString(undefined, { weekday: "short"
+ * })`. That reads `Mo` on a German machine and `Mon` on an English one, so two
+ * teachers editing the same class file would write two spellings into the one
+ * column. The corpus is shared and the headings already in it are English; the
+ * weekday column matches them.
+ *
+ * Sunday-first because `getDay()` is. The dialog offers its checkboxes
+ * Monday-first, which is how a school week reads here.
+ */
+const WEEKDAY_SHORT_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/**
+ * The narrowest a generated column is written - which is what a delimiter row
+ * needs in order to read as one.
+ *
+ * Only the marker column ever reaches for it: its heading is empty and its
+ * widest cell is `x`. Three rather than one because three is what the tables in
+ * the corpus carry and what Obsidian's own table editor pads to, so the first
+ * edit of a generated table is not a diff of pure whitespace.
+ */
+const MIN_TABLE_COLUMN_WIDTH = 3;
+
+/** Two digits, which both `dd.MM.yyyy` and `yyyy-MM-dd` want of a day and a month. */
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+/**
+ * Reads the `yyyy-MM-dd` an `<input type="date">` hands out as local midnight of
+ * that calendar day - null where there is no date in it.
+ *
+ * Never `new Date(value)`: a bare `yyyy-MM-dd` is read as *UTC* midnight, and in
+ * any timezone west of UTC `getDate()` then reports the day before. That is a
+ * whole table shifted by one day, and shifted only for some of the people
+ * running the command. Built from components it is local midnight, which is the
+ * same calendar day everywhere. `readsAsTime` builds its dates this way, for
+ * this reason.
+ *
+ * The two guards are not one guard twice. A segment that is not there at all
+ * leaves `undefined`, which `Number.isNaN` says nothing about, and it is the
+ * date built from it that comes out invalid.
+ */
+function readDateField(value: string): Date | null {
+  const [year, month, day] = value
+    .trim()
+    .split("-")
+    .map((segment) => Number.parseInt(segment, 10));
+  if ([year, month, day].some((segment) => Number.isNaN(segment))) return null;
+  const date = new Date(year, month - 1, day);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * Today, as the `yyyy-MM-dd` an `<input type="date">` takes.
+ *
+ * Not `toISOString().slice(0, 10)`, which is the UTC day: east of UTC, between
+ * local midnight and the UTC one, that is yesterday - and a dialog that opens on
+ * yesterday is wrong in the way nobody checks.
+ */
+function todayAsDateFieldValue(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+}
+
+/** A calendar day as one comparable number, so that comparing two dates cannot turn on the time of day either carries. */
+function dayOrdinal(date: Date): number {
+  return date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
+}
+
+/**
+ * Every date from `start` to `end` inclusive whose weekday was ticked, in
+ * chronological order.
+ *
+ * The walk advances by calendar day - `setDate(getDate() + 1)` - and not by
+ * 86_400_000 milliseconds. A fixed day drifts by an hour across a
+ * daylight-saving boundary, and a semester-long range crosses one nearly every
+ * time: the winter term ends beside one and the summer term begins beside the
+ * other. `setDate` moves the calendar field and leaves the clock to the runtime.
+ * The end is compared as a calendar day for the same reason - where a zone's
+ * midnight does not exist on the switching day the walk lands an hour off it,
+ * and a comparison of timestamps would drop the last row for it.
+ *
+ * Nothing is left out. A holiday is a row like any other, because the break in
+ * the teaching is written *into* the row it falls on by the person who knows
+ * what the break is, and because an unbroken run of weeks is the overview the
+ * table exists to give.
+ *
+ * Empty where the end falls before the start or nothing was ticked. The dialog
+ * refuses both as well; this is the rule itself, standing in the code that would
+ * otherwise build the table - as `insertSideBySide`'s `if (columns < 2) return;`
+ * does.
+ */
+function lessonDates(start: Date, end: Date, weekdays: ReadonlySet<number>): Date[] {
+  const last = dayOrdinal(end);
+  if (weekdays.size === 0 || last < dayOrdinal(start)) return [];
+
+  const dates: Date[] = [];
+  const cursor = new Date(start.getTime());
+  while (dayOrdinal(cursor) <= last) {
+    if (weekdays.has(cursor.getDay())) dates.push(new Date(cursor.getTime()));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
+}
+
+/**
+ * One subject heading out of the two halves the dialog asks for.
+ *
+ * The headings in the corpus are a subject over the teachers who take it -
+ * `0WMC<br>(UNTEG)` - and that `<br>` is markup in the middle of a heading
+ * nobody should have to know about to lay out a semester. So the dialog asks
+ * for the two halves and this puts them together; what a person types is what
+ * they would say out loud.
+ *
+ * Either half alone is that half, not a heading with an empty line in it: a
+ * `<br>` written above nothing leaves a heading that sits oddly high in its
+ * row, and somebody who filled in one field meant one line.
+ */
+function subjectHeading(subject: string, teachers: string): string {
+  const over = subject.trim();
+  const under = teachers.trim();
+  if (over === "" || under === "") return over === "" ? under : over;
+  return `${over}<br>${under}`;
+}
+
+/**
+ * The subject headings as the author gave them, with only what would break the
+ * table changed.
+ *
+ * They carry markup on purpose - `0WMC<br>(UNTEG)` - so nothing here normalizes
+ * them: what belongs in a heading is the author's to decide, and a command that
+ * reformatted them would be deciding it instead. An unescaped `|` is the
+ * exception, because it ends the cell early and shifts every column after it -
+ * one heading would break the table rather than itself.
+ *
+ * A blank line in the field is no column at all.
+ */
+function subjectHeadings(entries: string[]): string[] {
+  return entries
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "")
+    .map((entry) => entry.replace(/\|/g, "\\|"));
+}
+
+/**
+ * The table: a heading row, a delimiter row, and one row per lesson.
+ *
+ * Written aligned, every cell padded to the width of the widest thing in its
+ * column. That is what the tables in the corpus look like, and what Obsidian's
+ * table editor would reformat an unaligned table into the first time somebody
+ * edited it - so writing it unaligned only means the first edit produces a large
+ * diff of pure whitespace.
+ */
+function semesterTableLines(dates: Date[], subjects: string[]): string[] {
+  // The marker column's heading is empty. Markdown has no cell background, so
+  // which lesson is next is said by a character in a column of its own - and a
+  // column holding one `x` needs no name above it.
+  const headings = ["", "Day", "Date", ...subjects, "Info"];
+  const blankSubjects = subjects.map(() => "");
+  const rows = dates.map((date, index) => [
+    // At the moment the table is generated, the next lesson is its first row.
+    index === 0 ? "x" : "",
+    WEEKDAY_SHORT_NAMES[date.getDay()],
+    `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}.${date.getFullYear()}`,
+    ...blankSubjects,
+    "",
+  ]);
+
+  const widths = headings.map((heading, column) =>
+    Math.max(MIN_TABLE_COLUMN_WIDTH, heading.length, ...rows.map((row) => row[column].length))
+  );
+  const line = (cells: string[]) =>
+    `| ${cells.map((cell, column) => cell.padEnd(widths[column])).join(" | ")} |`;
+
+  return [line(headings), line(widths.map((width) => "-".repeat(width))), ...rows.map(line)];
+}
+
+/**
+ * The text the table will stand under, as `writeLines` is going to place it.
+ *
+ * Not simply the line above the cursor. With the cursor in the middle of a line
+ * the insertion breaks that line, and what stands above the table is the part
+ * before the cursor; at the very top of a gated file `writeLines` writes *below*
+ * the directive rather than above it, so what stands above the table there is
+ * the directive.
+ */
+function textAboveInsertion(editor: Editor): string {
+  const from = editor.getCursor("from");
+  const before = editor.getLine(from.line).slice(0, from.ch);
+  if (before !== "") return before;
+  if (from.line > 0) return editor.getLine(from.line - 1);
+  return isFileLevelDirective(editor.getLine(0)) ? editor.getLine(0) : "";
+}
+
+/**
+ * Writes the semester table: one row for every ticked weekday in the range, in
+ * the columns the dialog was given.
+ */
+function insertSemesterTable(
+  editor: Editor,
+  start: Date,
+  end: Date,
+  weekdays: ReadonlySet<number>,
+  subjects: string[]
+) {
+  const dates = lessonDates(start, end, weekdays);
+  // A heading row over nothing is not a semester table; it is a thing to delete
+  // before the dialog can be answered properly.
+  if (dates.length === 0) return;
+
+  // A selection means nothing to this command - a grid of empty cells has
+  // nothing to enclose one with - and `writeLines` replaces what is selected.
+  // Collapsed to where the selection begins, the table stands beside it and
+  // nothing is lost. `insertSectionsPerName` faces this and does the same.
+  editor.setCursor(editor.getCursor("from"));
+
+  const table = semesterTableLines(dates, subjectHeadings(subjects));
+  // A blank line above the table unless there is one already. `writeLines`
+  // guarantees the insertion begins on a line of its own, which is not the same
+  // thing: a table directly beneath a paragraph can be read as part of that
+  // paragraph. Obsidian's renderer is lenient about it and the server renders
+  // this same corpus, and a document should not rest on which of the two
+  // forgives more.
+  const lines = textAboveInsertion(editor).trim() === "" ? table : ["", ...table];
+
+  // The cursor lands on the first data row: the row carrying the marker, and the
+  // one there is anything to write in.
+  writeLines(editor, lines, lines.length - dates.length);
+}
+
+/**
+ * Asks what a semester table covers: the span, the weekdays the class meets, and
+ * the subject columns to lay out.
+ *
+ * In the manner of `ColumnCountModal` - the fields built in `onOpen`, confirmed
+ * on a button in `modal-button-container` and on Enter, closed before the
+ * callback runs - with rather more to ask about than a number.
+ */
+class SemesterTableModal extends Modal {
+  constructor(
+    app: App,
+    private readonly onGenerate: (
+      start: Date,
+      end: Date,
+      weekdays: Set<number>,
+      subjects: string[]
+    ) => void
+  ) {
+    super(app);
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Semester table" });
+
+    // The fields say which format the table will carry, because they cannot show
+    // it: `<input type="date">` draws itself in the browser's locale, so
+    // somebody whose Chromium is set to US English is offered `09/21/2026` while
+    // the table writes `21.09.2026`. The value behind the field is ISO either
+    // way, so the table is unaffected - what was left to do about it is to say so.
+    const start = this.dateField("First lesson (written as dd.MM.yyyy)", todayAsDateFieldValue());
+    const end = this.dateField("Last lesson (written as dd.MM.yyyy)", "");
+
+    contentEl.createEl("label", {
+      text: "Weekdays the class meets",
+      cls: "safelearn-semester-label",
+    });
+    const weekdayRow = contentEl.createDiv({ cls: "safelearn-semester-weekdays" });
+    const ticks = new Map<number, HTMLInputElement>();
+    // Monday first, which is how a school week reads here. The numbers stay the
+    // ones `getDay()` hands out.
+    for (const day of [1, 2, 3, 4, 5, 6, 0]) {
+      const label = weekdayRow.createEl("label");
+      ticks.set(day, label.createEl("input", { type: "checkbox" }));
+      label.appendText(` ${WEEKDAY_SHORT_NAMES[day]}`);
+    }
+
+    contentEl.createEl("label", {
+      text: "Subject columns - the subject, and who takes it",
+      cls: "safelearn-semester-label",
+    });
+    const subjectRows = contentEl.createDiv({ cls: "safelearn-semester-subjects" });
+    const subjects: { subject: HTMLInputElement; teachers: HTMLInputElement }[] = [];
+
+    /**
+     * One subject column: the two halves of its heading, side by side.
+     *
+     * A row is added as the last one is filled in, so the dialog is as long as
+     * the class it is describing and nobody counts empty rows before starting.
+     * The two halves are written into one heading by `subjectHeading`; the
+     * `<br>` between them is markup, and asking a person to type markup into a
+     * dialog is asking them to know about a detail of the format the dialog
+     * exists to spare them.
+     */
+    const addSubjectRow = () => {
+      const row = subjectRows.createDiv({ cls: "safelearn-semester-subject" });
+      const subject = row.createEl("input", { type: "text" });
+      subject.placeholder = "0WMC";
+      const teachers = row.createEl("input", { type: "text" });
+      teachers.placeholder = "(UNTEG)";
+      subjects.push({ subject, teachers });
+
+      for (const field of [subject, teachers]) {
+        field.addEventListener("input", () => {
+          const last = subjects[subjects.length - 1];
+          if (last.subject.value.trim() === "" && last.teachers.value.trim() === "") return;
+          addSubjectRow();
+        });
+        // Bound here rather than over the rows that exist when the dialog opens,
+        // because rows are added while it is open and a field Enter does nothing
+        // in is a field that behaves differently from the one beside it.
+        field.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") confirm();
+        });
+      }
+      return row;
+    };
+
+    // Three to begin with, which is as many as the fullest class file in the
+    // corpus carries - and a fourth appears as soon as the third is used.
+    for (let column = 0; column < 3; column++) addSubjectRow();
+
+    // Left open rather than closed on nothing: what is wrong is a field to
+    // correct, and a dialog that had vanished would have to be opened and filled
+    // in again before it could be.
+    const refuse = (reason: string) => {
+      new Notice(reason);
+    };
+
+    const confirm = () => {
+      const from = readDateField(start.value);
+      const to = readDateField(end.value);
+      const chosen = new Set(
+        [...ticks].filter(([, tick]) => tick.checked).map(([day]) => day)
+      );
+
+      if (!from || !to) return refuse("A semester table needs a first and a last lesson.");
+      if (dayOrdinal(to) < dayOrdinal(from)) return refuse("The last lesson falls before the first.");
+      if (chosen.size === 0) return refuse("Tick at least one weekday for the class.");
+
+      this.close();
+      this.onGenerate(
+        from,
+        to,
+        chosen,
+        subjects.map((row) => subjectHeading(row.subject.value, row.teachers.value))
+      );
+    };
+
+    // Enter confirms from either date field - the subject fields bind it as they
+    // are built, since more of them appear while the dialog is open.
+    for (const field of [start, end]) {
+      field.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") confirm();
+      });
+    }
+
+    contentEl
+      .createEl("div", { cls: "modal-button-container" })
+      .createEl("button", { text: "Generate" })
+      .addEventListener("click", confirm);
+
+    start.focus();
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+
+  /** One labelled `<input type="date">`, since the dialog asks for two of them. */
+  private dateField(text: string, value: string): HTMLInputElement {
+    this.contentEl.createEl("label", { text, cls: "safelearn-semester-label" });
+    const input = this.contentEl.createEl("input", { type: "date" });
+    input.value = value;
+    input.style.width = "100%";
+    return input;
   }
 }
 

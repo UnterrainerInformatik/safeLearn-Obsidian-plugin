@@ -14,7 +14,7 @@ Nothing to configure to use the tags below. The directory features further down 
 
 ## Write the tags from the menu
 
-Right-click in the editor and open **SafeLearn**. The same five are in the command palette, under *SafeLearn Formatter*.
+Right-click in the editor and open **SafeLearn**. The same commands are in the command palette, under *SafeLearn Formatter*.
 
 ![The editor's context menu](assets/menu.png)
 
@@ -23,6 +23,7 @@ Right-click in the editor and open **SafeLearn**. The same five are in the comma
 | **Side-by-side block** | Two columns. |
 | **Side-by-side, n columns…** | Asks how many, defaults to three. |
 | **Fragment marker** | `##fragment` above the block the cursor is in. |
+| **Semester table…** | Asks for a span, the weekdays the class meets and the subject columns, and writes a dated row for every lesson. |
 | **Restricted section per name…** | One restricted block per name — paste a class list. |
 | **Restrict selection…** | Wraps the selection in a directive. |
 
