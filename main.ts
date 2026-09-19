@@ -69,12 +69,14 @@ declare module "obsidian" {
  * this project's shared identity provider, the same default/override shape
  * `docs-testing.md` already uses for `SAFELEARN_TEST_IDP_URL`/`SAFELEARN_TEST_REALM`.
  *
- * `refreshTokenLifetimeSeconds` is the realm's own answer to how long a refresh
- * token lives - `refresh_expires_in`, which Keycloak sends with every
- * successful exchange and which this plugin used to drop. It is kept because a
- * login in progress is given exactly that long to conclude (`design.md`): the
- * realm already knows the figure, so a constant in the source would be a second
- * copy of it, free to be wrong on every deployment that is not this one.
+ * No figure for how long a login may take is persisted here. An earlier version
+ * kept the realm's `refresh_expires_in` as `refreshTokenLifetimeSeconds` and
+ * gave a login in progress exactly that long, which let a realm answering a
+ * small number lock this plugin out of logging in for good. The deadline is the
+ * plugin's own - `LOGIN_DEADLINE_MS` - because what it bounds is a person at a
+ * login page, and no realm reports that quantity. An installation updated from
+ * that version keeps the now-dead key until the next rewrite of this file;
+ * nothing reads it. See `design.md`.
  */
 interface SafeLearnPluginData {
   instanceUrl: string;
@@ -82,7 +84,6 @@ interface SafeLearnPluginData {
   realm: string;
   serverClientId: string;
   refreshToken: string | null;
-  refreshTokenLifetimeSeconds: number;
   // Gates `debugLog` - off by default, switched on from the settings tab
   // only while troubleshooting a login/directory-search problem.
   debugLogging: boolean;
@@ -98,12 +99,6 @@ const DEFAULT_DATA: SafeLearnPluginData = {
   // defaulted to this project's own convention.
   serverClientId: "safeLearn",
   refreshToken: null,
-  // Keycloak's own default for SSO Session Idle, which is what
-  // `refresh_expires_in` follows out of the box. It is a seed and not a
-  // setting: the first successful exchange replaces it with what the realm
-  // actually answered, and a wrong seed costs exactly one attempt, since it
-  // decides only how long the very first login waits before giving up.
-  refreshTokenLifetimeSeconds: 30 * 60,
   // Off by default - only turned on while actively chasing a bug, not left
   // logging token-adjacent detail for every install.
   debugLogging: false,
@@ -404,6 +399,23 @@ interface PendingLogin {
  */
 const EXPIRY_TICK_MS = 1000;
 
+/**
+ * How long a login in progress is given to conclude.
+ *
+ * What it bounds is a person at the identity provider's login page: typing a
+ * password, clearing a second factor, and finding the phone that second factor
+ * is on. Ten minutes covers all three with room to spare, and a person for whom
+ * it does not can start again from every state.
+ *
+ * It is deliberately not taken from anything a realm answers. `refresh_expires_in`
+ * measures how long an identity stays good for - or, at the end of a session,
+ * how little of that session is left - and neither is a measure of how long
+ * somebody takes at a login page. This plugin was once given `1` by a realm
+ * that way, which ended every login on the first tick after the browser opened.
+ * See `design.md`.
+ */
+const LOGIN_DEADLINE_MS = 10 * 60 * 1000;
+
 /** How many concluded logins are remembered, which is only as many as could still have a callback in flight. */
 const CONCLUDED_LOGINS_KEPT = 20;
 
@@ -539,6 +551,19 @@ function causeWithRemedy(cause: LoginFailure): string {
     case "no-longer-pending":
       return `${causeAsSentence(cause)} Nothing was logged in from it. Log in again if you still want to.`;
   }
+}
+
+/**
+ * How a login's `state` is named in the debug log: its first eight characters.
+ *
+ * A debug log is made to be copied into a chat window and sent to somebody, and
+ * a full `state` is the live anti-forgery token of a login that may still be in
+ * flight. Eight characters match a start against the callback that came back
+ * from it, which is the only thing a reader needs it for, and are not enough to
+ * forge a callback with. See `design.md`.
+ */
+function loggableState(state: string | undefined): string {
+  return typeof state === "string" ? `${state.slice(0, 8)}...` : "<none>";
 }
 
 /** The moment a login was started, in the reader's own clock - a duration would have to be recomputed to stay true, and nothing redraws it while it is read. */
@@ -1020,13 +1045,6 @@ export default class SafeLearnPlugin extends Plugin {
     this.notifyLoginStateChanged();
   }
 
-  /** How long a login in progress is given: what the realm itself last answered for a refresh token, read at the moment the login starts. */
-  private pendingLoginLifetimeMs(): number {
-    const seconds = Number(this.data.refreshTokenLifetimeSeconds);
-    const usable = Number.isFinite(seconds) && seconds > 0 ? seconds : DEFAULT_DATA.refreshTokenLifetimeSeconds;
-    return usable * 1000;
-  }
-
   /** Stops waiting on every login in progress, remembering each so a callback arriving afterwards can say what became of it. */
   private concludePendingLogins() {
     for (const state of this.pendingLogins.keys()) this.rememberConcluded(state);
@@ -1058,6 +1076,13 @@ export default class SafeLearnPlugin extends Plugin {
       if (now < pending.expiresAt) continue;
       this.pendingLogins.delete(state);
       this.rememberConcluded(state);
+      this.debugLog(
+        "expirePendingLogins: deadline reached for",
+        loggableState(state),
+        "after",
+        Math.round((now - pending.startedAt) / 1000),
+        "s in progress",
+      );
       expired = true;
     }
     if (!expired) return;
@@ -1082,7 +1107,7 @@ export default class SafeLearnPlugin extends Plugin {
     this.pendingLogins.set(key, {
       verifier: null,
       startedAt,
-      expiresAt: startedAt + this.pendingLoginLifetimeMs(),
+      expiresAt: startedAt + LOGIN_DEADLINE_MS,
       instanceUrl: this.instanceUrl(),
     });
     this.notifyLoginStateChanged();
@@ -1129,12 +1154,20 @@ export default class SafeLearnPlugin extends Plugin {
     this.pendingLogins.set(state, {
       verifier,
       startedAt,
-      expiresAt: startedAt + this.pendingLoginLifetimeMs(),
+      expiresAt: startedAt + LOGIN_DEADLINE_MS,
       instanceUrl: this.instanceUrl(),
     });
     // The attempt now in progress is what is true; the last one's failure is
     // not, and leaving it recorded would outlive the state it belonged to.
     this.lastFailure = null;
+    this.debugLog(
+      "login: started",
+      loggableState(state),
+      "deadline",
+      LOGIN_DEADLINE_MS / 1000,
+      "s, falls at",
+      timeOfDay(startedAt + LOGIN_DEADLINE_MS),
+    );
     this.notifyLoginStateChanged();
 
     url.searchParams.set("response_type", "code");
@@ -1165,12 +1198,12 @@ export default class SafeLearnPlugin extends Plugin {
   /**
    * Ends a login in progress without waiting for it to expire.
    *
-   * The lifetime a login gets is the realm's figure for a refresh token, which
-   * on a realm with long sessions is far longer than anybody waits on a browser
-   * round trip - so `plugin-login-state` requires a way out that is not the
-   * timer. Recorded as a cancellation rather than as nothing, because the state
-   * it leaves behind is a person's own doing and reads wrongly as "not logged
-   * in", which is what it was before they clicked anything.
+   * The deadline a login gets is ten minutes, which is far longer than anybody
+   * waits on a browser round trip they have already abandoned - so
+   * `plugin-login-state` requires a way out that is not the timer. Recorded as
+   * a cancellation rather than as nothing, because the state it leaves behind
+   * is a person's own doing and reads wrongly as "not logged in", which is what
+   * it was before they clicked anything.
    */
   cancelLogin() {
     if (this.pendingLogins.size === 0) return;
@@ -1194,6 +1227,7 @@ export default class SafeLearnPlugin extends Plugin {
    */
   private async handleAuthCallback(params: Record<string, string>) {
     const state = params.state;
+    this.debugLog("handleAuthCallback: arrived for", loggableState(state));
     const held = typeof state === "string" ? this.pendingLogins.get(state) : undefined;
     // Past its lifetime is past it, whether or not the timer has come round to
     // sweeping the entry yet. The alternative is a login that completes or does
@@ -1216,6 +1250,7 @@ export default class SafeLearnPlugin extends Plugin {
           ? { kind: "no-longer-pending" }
           : { kind: "another-window" };
       this.lastFailure = cause;
+      this.debugLog("handleAuthCallback: no identity obtained from", loggableState(state), "-", cause.kind);
       this.notifyLoginStateChanged();
       // A callback landing while this window waits on a login of its own leaves
       // the state at *logging in*, which is what `plugin-login-state` requires -
@@ -1230,6 +1265,7 @@ export default class SafeLearnPlugin extends Plugin {
     this.rememberConcluded(state);
 
     if (typeof params.code !== "string") {
+      this.debugLog("handleAuthCallback: no identity obtained from", loggableState(state), "- no-code");
       this.failLogin({ kind: "no-code" });
       return;
     }
@@ -1237,9 +1273,18 @@ export default class SafeLearnPlugin extends Plugin {
     try {
       await this.exchangeCodeForTokens(params.code, pending.verifier);
       this.lastFailure = null;
+      this.debugLog(
+        "handleAuthCallback: identity obtained from",
+        loggableState(state),
+        "after",
+        Math.round((Date.now() - pending.startedAt) / 1000),
+        "s",
+      );
       this.notifyLoginStateChanged();
     } catch (error) {
-      this.failLogin(failureOf(error));
+      const cause = failureOf(error);
+      this.debugLog("handleAuthCallback: exchange failed for", loggableState(state), "-", cause.kind);
+      this.failLogin(cause);
     }
   }
 
@@ -1329,11 +1374,6 @@ export default class SafeLearnPlugin extends Plugin {
     this.accessToken = json.access_token;
     this.accessTokenExpiresAt = Date.now() + Math.max(0, Number(json.expires_in) - 30) * 1000;
     this.data.refreshToken = json.refresh_token ?? this.data.refreshToken;
-    // Kept, where it used to be dropped: this is the realm's own figure for how
-    // long the token it just issued lives, and it is what a login in progress
-    // is given to conclude in. See `design.md`.
-    const lifetime = Number(json.refresh_expires_in);
-    if (Number.isFinite(lifetime) && lifetime > 0) this.data.refreshTokenLifetimeSeconds = lifetime;
     await this.saveSettings();
   }
 
