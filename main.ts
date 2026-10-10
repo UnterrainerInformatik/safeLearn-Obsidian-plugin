@@ -111,11 +111,22 @@ const DEFAULT_DATA: SafeLearnPluginData = {
  */
 const DIRECTORY_CLIENT_ID = "safelearn-plugin";
 
-/** A person the directory has an entry for: what the search endpoint hands back, and nothing else. */
+/**
+ * A person the directory has an entry for: what the search endpoint hands back, and nothing else.
+ *
+ * `firstName` and `lastName` are the two parts `name` is made of. They are
+ * carried only so a command can write chosen people in surname order, and are
+ * never shown on their own. `undefined` is an instance too old to send them.
+ */
 interface DirectoryEntry {
   name: string;
+  firstName?: string;
+  lastName?: string;
   roles: Record<string, boolean>;
 }
+
+/** Someone chosen in the picker: their display name, and the parts it is made of where the instance sent them. */
+type ChosenPerson = Pick<DirectoryEntry, "name" | "firstName" | "lastName">;
 
 /**
  * How far a directory fetch on the server has got, as its status endpoint
@@ -1447,7 +1458,12 @@ export default class SafeLearnPlugin extends Plugin {
     if (!Array.isArray(body)) return { outcome: "failed", entries: [] };
     return {
       outcome: "ok",
-      entries: body.map((entry) => ({ name: String(entry?.name ?? ""), roles: entry?.roles ?? {} })),
+      entries: body.map((entry) => ({
+        name: String(entry?.name ?? ""),
+        firstName: typeof entry?.firstName === "string" ? entry.firstName : undefined,
+        lastName: typeof entry?.lastName === "string" ? entry.lastName : undefined,
+        roles: entry?.roles ?? {},
+      })),
     };
   }
 
@@ -3132,7 +3148,8 @@ const AUTHORING_COMMANDS: AuthoringCommand[] = [
       new NameListModal(
         plugin,
         "A restricted section for each name",
-        (names) => insertSectionsPerName(editor, names)
+        (names, content) => insertSectionsPerName(editor, names, sectionContentLines(content)),
+        { withSectionContent: true }
       ).open(),
   },
   {
@@ -3313,14 +3330,16 @@ class ColumnCountModal extends Modal {
 }
 
 /**
- * Writes one restricted section per name, in the order the names were given.
+ * Writes one restricted section per name, in the order the names were given,
+ * each holding `contentLines` - the content given once for every section, or
+ * the single blank line `sectionContentLines` makes of none.
  *
  * A section carries no heading of its own. The reading view already renders the
  * addressed name as the block's heading, so a heading written into the section's
  * content would repeat, in the document's own text, what every reader already
  * sees rendered above it.
  */
-function insertSectionsPerName(editor: Editor, names: string[]) {
+function insertSectionsPerName(editor: Editor, names: string[], contentLines: string[] = [""]) {
   if (names.length === 0) return;
 
   // A selection means nothing to this command, and `writeLines` replaces what is
@@ -3330,13 +3349,82 @@ function insertSectionsPerName(editor: Editor, names: string[]) {
   const lines: string[] = [];
   for (const name of names) {
     if (lines.length > 0) lines.push("");
-    lines.push(`@@@ ${name}`, "", "@@@");
+    lines.push(`@@@ ${name}`, ...contentLines, "@@@");
   }
 
-  // Line 1 of the first section: the blank line right after its directive,
-  // which is where the person is about to write.
+  // Line 1 of the first section: the first line of its content, right after its
+  // directive, which is where the person is about to write.
   writeLines(editor, lines, 1);
   reportReservedNames(names);
+}
+
+/**
+ * The lines every generated section holds, from what was given in the dialog's
+ * content field.
+ *
+ * Nothing, or only whitespace, is the single blank line a section has always
+ * held. Otherwise the text is kept line by line as it was given - indentation,
+ * blank lines and markup included - except for one trailing line break, which a
+ * paste brings along and which would otherwise put a blank line before every
+ * closing marker.
+ */
+function sectionContentLines(raw: string): string[] {
+  if (raw.trim() === "") return [""];
+  const lines = raw.split(/\r?\n/);
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/**
+ * Whether the content given for every section holds a line the renderer reads
+ * as opening or closing a restriction. A bare `@@@` would close the section
+ * around it, and `@@@ x` open one the grammar does not nest: either way part of
+ * the content ends up outside the section it was meant for, readable by
+ * everyone.
+ */
+function sectionContentHoldsMarker(raw: string): boolean {
+  return raw.split(/\r?\n/).some((line) => directiveOpeningPattern().test(line));
+}
+
+/**
+ * German alphabetical order for names: case is ignored, and an umlaut or an
+ * accent sorts beside its base letter rather than after `z`.
+ */
+const NAME_COLLATOR = new Intl.Collator("de", { sensitivity: "base" });
+
+/**
+ * The order the names a command was given are written in.
+ *
+ * The people chosen in the picker are ordered by surname, then given name -
+ * the way a class list is read - although the picker itself keeps the
+ * directory's order, in which a class stands together. A person the instance
+ * sent no name parts for is ordered by their display name instead. The sort is
+ * stable, so the choice order decides only between people the collation cannot
+ * tell apart.
+ *
+ * Typed or pasted names follow, in the order they were given: they carry no
+ * surname to sort by, and a pasted list may already be in an order somebody
+ * chose. Every name is trimmed, blanks are dropped, and a name already written
+ * is not written again.
+ */
+function orderForWriting(chosen: ChosenPerson[], typed: string[]): string[] {
+  const surnameKey = (person: ChosenPerson) =>
+    person.lastName !== undefined && person.lastName.trim() !== "" ? person.lastName : person.name;
+  const givenKey = (person: ChosenPerson) =>
+    person.lastName !== undefined && person.lastName.trim() !== "" ? person.firstName ?? "" : "";
+  const sorted = [...chosen].sort(
+    (a, b) =>
+      NAME_COLLATOR.compare(surnameKey(a), surnameKey(b)) ||
+      NAME_COLLATOR.compare(givenKey(a), givenKey(b)) ||
+      NAME_COLLATOR.compare(a.name, b.name)
+  );
+
+  const names: string[] = [];
+  for (const candidate of [...sorted.map((person) => person.name), ...typed]) {
+    const trimmed = candidate.trim();
+    if (trimmed !== "" && !names.includes(trimmed)) names.push(trimmed);
+  }
+  return names;
 }
 
 /**
@@ -3407,17 +3495,20 @@ class NameListModal extends Modal {
    * shown, in place of both the marked-result set and the textarea that set
    * used to feed.
    *
-   * Insertion order because the commands write one section per name in the
-   * order they were given; the trimmed exact name because that is what the
-   * picker offers and what the document carries, and folding it here would
-   * only have to be undone when writing.
+   * Insertion order, because that is the directory's order when a class is
+   * taken over, and in it a class stands together while it is being picked.
+   * The surname order the document is written in is decided once, in
+   * `confirm` (`orderForWriting`). Keyed on the trimmed exact name because
+   * that is what the picker offers and what the document carries, and folding
+   * it here would only have to be undone when writing.
    */
-  private readonly chosenNames: string[] = [];
+  private readonly chosen: ChosenPerson[] = [];
 
   constructor(
     private readonly plugin: SafeLearnPlugin,
     private readonly title: string,
-    private readonly onList: (names: string[]) => void
+    private readonly onList: (names: string[], content: string) => void,
+    private readonly options: { withSectionContent?: boolean } = {}
   ) {
     super(plugin.app);
   }
@@ -3463,17 +3554,39 @@ class NameListModal extends Modal {
     if (showsPicker) void this.buildDirectorySearch(pickerHome, revealTypedList);
     else revealTypedList();
 
+    // The content every section starts with, given once: built outright rather
+    // than on demand, because it is wanted whether or not the picker is shown.
+    // Below the names, so the dialog still reads top to bottom - who, then what
+    // each of them gets - with the confirmation below the last field.
+    let sectionContent: HTMLTextAreaElement | null = null;
+    if (this.options.withSectionContent) {
+      const contentHome = contentEl.createDiv({ cls: "safelearn-name-list-content" });
+      contentHome.createEl("p", {
+        text: "Optional: content every section starts with, e.g. a grid to fill in per person.",
+      });
+      sectionContent = contentHome.createEl("textarea", { cls: "safelearn-name-list-content-field" });
+      sectionContent.rows = 6;
+      sectionContent.style.width = "100%";
+    }
+
     const confirm = () => {
+      const content = sectionContent?.value ?? "";
+      // Refused before anything is closed, so names and content are still
+      // there to correct (`plugin-authoring-commands`).
+      if (sectionContentHoldsMarker(content)) {
+        new Notice(
+          "The content for every section cannot hold a line starting with @@@: it would end the section early and leave the rest outside it.",
+          0
+        );
+        return;
+      }
       // Both sources where both exist: a picker that goes unreachable after
       // somebody has already chosen people must not drop them for having
-      // revealed the field. Deduplicated the way the chosen list itself is.
-      const names: string[] = [];
-      for (const candidate of [...this.chosenNames, ...(input?.value.split("\n") ?? [])]) {
-        const trimmed = candidate.trim();
-        if (trimmed !== "" && !names.includes(trimmed)) names.push(trimmed);
-      }
+      // revealed the field. Chosen people in surname order, then typed names
+      // as they were given.
+      const names = orderForWriting(this.chosen, input?.value.split("\n") ?? []);
       this.close();
-      if (names.length > 0) this.onList(names);
+      if (names.length > 0) this.onList(names, content);
     };
 
     // On the dialog rather than on the field: where the picker is shown there
@@ -3567,12 +3680,12 @@ class NameListModal extends Modal {
      */
     const renderChosen = () => {
       chosenCount.setText(
-        this.chosenNames.length === 0
+        this.chosen.length === 0
           ? "Nobody chosen yet."
-          : `${this.chosenNames.length} ${this.chosenNames.length === 1 ? "person" : "people"} chosen.`
+          : `${this.chosen.length} ${this.chosen.length === 1 ? "person" : "people"} chosen.`
       );
       chosenList.empty();
-      for (const name of this.chosenNames) {
+      for (const { name } of this.chosen) {
         const row = chosenList.createDiv({ cls: "safelearn-directory-chosen-name" });
         // The same attribute the result rows carry, for the same reason: a
         // check finds a specific person without depending on how the row is
@@ -3580,18 +3693,18 @@ class NameListModal extends Modal {
         row.setAttribute("data-safelearn-name", name);
         row.setText(name);
         row.addEventListener("click", () => {
-          const at = this.chosenNames.indexOf(name);
-          if (at >= 0) this.chosenNames.splice(at, 1);
+          const at = this.chosen.findIndex((person) => person.name === name);
+          if (at >= 0) this.chosen.splice(at, 1);
           renderChosen();
         });
       }
     };
 
     /** Moves one person into the chosen list, or leaves them there once if they already are. */
-    const choose = (name: string) => {
-      const trimmed = name.trim();
-      if (trimmed === "" || this.chosenNames.includes(trimmed)) return;
-      this.chosenNames.push(trimmed);
+    const choose = (entry: DirectoryEntry) => {
+      const trimmed = entry.name.trim();
+      if (trimmed === "" || this.chosen.some((person) => person.name === trimmed)) return;
+      this.chosen.push({ name: trimmed, firstName: entry.firstName, lastName: entry.lastName });
       renderChosen();
     };
 
@@ -3635,9 +3748,9 @@ class NameListModal extends Modal {
 
         // The whole row moves that person down into the chosen list. There is
         // no mark to keep in step with anything: what has been chosen lives in
-        // `chosenNames` alone, so a re-render from a new search leaves an
+        // `chosen` alone, so a re-render from a new search leaves an
         // already-chosen person chosen, and once.
-        item.addEventListener("click", () => choose(entry.name));
+        item.addEventListener("click", () => choose(entry));
       }
     };
 
@@ -3791,7 +3904,7 @@ class NameListModal extends Modal {
     // nobody, which loses nothing already chosen, and everybody it is showing
     // otherwise, in one action.
     addVisible.addEventListener("click", () => {
-      for (const entry of lastEntries) choose(entry.name);
+      for (const entry of lastEntries) choose(entry);
     });
 
     // An empty chosen list still says so, from the moment the dialog opens.

@@ -24,7 +24,7 @@ Right-click in the editor and open **SafeLearn**. The same commands are in the c
 | **Side-by-side, n columns…** | Asks how many, defaults to three. |
 | **Fragment marker** | `##fragment` above the block the cursor is in. |
 | **Semester table…** | Asks for a span, the weekdays the class meets and the subject columns, and writes a dated row for every lesson. |
-| **Restricted section per name…** | One restricted block per name — paste a class list. |
+| **Restricted section per name…** | One restricted block per name, in surname order — optionally each pre-filled with the same content. |
 | **Restrict selection…** | Wraps the selection in a directive. |
 
 With text selected, a side-by-side command encloses it whole and puts the separator after it. Every marker lands on a line of its own.
@@ -65,6 +65,8 @@ Reading view: the tags are gone, the headings remain.
 
 ![The sections it writes](assets/per-name-result.png)
 
+Below the names, the dialog has an optional field for content every section starts with — paste a grading grid, a feedback table or a checklist there once, and every student's section is created holding it, instead of you pasting it into each one. Left empty, each section gets a single blank line. A line starting with `@@@` is refused there, since it would end the section early and leave the rest of the grid readable by everyone.
+
 Five names are reserved (`admin`, `teacher`, `teachers`, `student`, `students`): SafeLearn reads them as *roles*, so a section for a student called `Students` is read by the whole school. The command writes your names unchanged and tells you when one of them was such a name.
 
 ### Picking names from the directory
@@ -72,6 +74,8 @@ Five names are reserved (`admin`, `teacher`, `teachers`, `student`, `students`):
 *Restricted section per name…* and *Restrict selection…* both open the same dialog, and where a safeLearn instance is configured and you are logged in, that dialog is a picker rather than a text area. Typing in the search field searches the school directory; typing in the class filter narrows a list of classes to check, and checking more than one shows matches from any of them.
 
 Click anybody in the results to move them into the **chosen** list below, and click **Add visible** to move over everybody the results are currently showing in one action — which is how you take a whole class, however many people are in it. The chosen list is what gets inserted, and it is visible the whole time: click somebody there to take them back out, and somebody chosen under a filter that no longer shows them stays on it, counted, rather than disappearing. Choosing the same person twice leaves them on it once.
+
+The chosen list keeps the directory's order, so a class you took over stands together while you pick. What gets **written** is in surname order, then first name, the way a class list is read — umlauts filed beside their base letter, double surnames under their first word. Names typed into the text area (where it is shown) keep the order you typed them in and follow the chosen people.
 
 Somebody the directory has no entry for — a guest, or a student not yet enrolled — is written into the document afterwards rather than typed into the dialog.
 
