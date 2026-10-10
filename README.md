@@ -26,6 +26,7 @@ Right-click in the editor and open **SafeLearn**. The same commands are in the c
 | **Semester table…** | Asks for a span, the weekdays the class meets and the subject columns, and writes a dated row for every lesson. |
 | **Restricted section per name…** | One restricted block per name, in surname order — optionally each pre-filled with the same content. |
 | **Restrict selection…** | Wraps the selection in a directive. |
+| **Invitation list…** | The people you pick from the directory as a list — names, class, e-mail address — in whatever format the tool you invite from reads. Inserted or copied. |
 
 With text selected, a side-by-side command encloses it whole and puts the separator after it. Every marker lands on a line of its own.
 
@@ -82,6 +83,24 @@ Somebody the directory has no entry for — a guest, or a student not yet enroll
 If the directory cannot be reached, or a search fails on the server, this is shown above the search field as soon as it happens rather than looking like an empty match, and the plain text area appears below the picker so the dialog can still be answered.
 
 With no instance configured, or with one configured but not logged in, this dialog is unchanged: the text area alone, one name per line, no search field and no network activity.
+
+### An invitation list from the directory
+
+*Invitation list…* writes the people you pick as a list to paste into whatever you send the invitation from: a meeting, a shared document, a course in another system, a mailing list. It opens the same picker as above — search, class filter, **Add visible** — and needs a directory login; without one the dialog says so and writes nothing. There is no text area: a typed name has no address or class to write.
+
+Below the picker you describe the format:
+
+- **Fields** — given name, surname, class and e-mail address. Tick the ones to write and move them with the arrow buttons; the order of the rows is the order they are written in. *Class* is every class-like group the person holds, alphabetically, separated by `/`.
+- **Between fields**, **Before each entry**, **After each entry** — free text.
+- **Between entries** — *Line break*, *Comma*, or *Custom* text.
+
+In every one of these texts, `\n` stands for a line break, `\t` for a tab and `\\` for a backslash. A spreadsheet import that wants `,,,Given,Surname,address,,` per line is given name, surname and e-mail address, `,` between fields, `,,,` before and `,,\n` after each entry, and nothing between entries.
+
+The preview shows the first five entries exactly as they will be written — or a placeholder person, while nobody is chosen yet, so you can judge the format first. The list is in surname order, and somebody chosen twice is written once. Values are written as they are, without quoting.
+
+**Insert** (or Ctrl/Cmd+Enter) writes the list at the cursor, replacing a selection; **Copy** puts it on the clipboard and leaves the note alone. The format you used is remembered for next time; who you picked is not.
+
+Somebody without a value for a field — a student with no address in the directory, somebody without a class — is written with that field empty and its separators in place, and a notice says how many entries that affects. A safeLearn instance older than this command sends no addresses at all; the list is then written with empty address fields, and the notice says the instance does not send them.
 
 ## Directory settings and login
 

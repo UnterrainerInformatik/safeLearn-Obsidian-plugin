@@ -58,6 +58,42 @@ declare module "obsidian" {
 
 // ################### Directory login: data, PKCE and the class heuristic ###################
 
+/** A field the invitation list can write for each person. */
+type InvitationField = "firstName" | "lastName" | "class" | "email";
+
+/** Every field, in the order the dialog offers them before anything was moved, with the label it is offered under. */
+const INVITATION_FIELDS: { field: InvitationField; label: string }[] = [
+  { field: "firstName", label: "Given name" },
+  { field: "lastName", label: "Surname" },
+  { field: "class", label: "Class" },
+  { field: "email", label: "E-mail address" },
+];
+
+/**
+ * How the invitation list is written: the switched-on fields in the order they
+ * are written, and the four texts around them.
+ *
+ * The texts are kept as the author typed them - `,,\n`, not a real line break -
+ * so the single-line inputs show them again exactly as typed.
+ * `unescapeFormatText` resolves them where the list is formatted.
+ */
+interface InvitationFormat {
+  fields: InvitationField[];
+  fieldSeparator: string;
+  prefix: string;
+  postfix: string;
+  entrySeparator: string;
+}
+
+/** The format the dialog starts with before any has been confirmed: addresses, one per line. */
+const DEFAULT_INVITATION_FORMAT: InvitationFormat = Object.freeze({
+  fields: ["email"],
+  fieldSeparator: ", ",
+  prefix: "",
+  postfix: "",
+  entrySeparator: "\\n",
+}) as InvitationFormat;
+
 /**
  * What `saveData`/`loadData` persist, in `data.json`.
  *
@@ -87,6 +123,9 @@ interface SafeLearnPluginData {
   // Gates `debugLog` - off by default, switched on from the settings tab
   // only while troubleshooting a login/directory-search problem.
   debugLogging: boolean;
+  // The format the invitation list was last written in, written on either of
+  // its confirmations and never while typing. See `InvitationListModal`.
+  invitationFormat: InvitationFormat;
 }
 
 const DEFAULT_DATA: SafeLearnPluginData = {
@@ -102,6 +141,7 @@ const DEFAULT_DATA: SafeLearnPluginData = {
   // Off by default - only turned on while actively chasing a bug, not left
   // logging token-adjacent detail for every install.
   debugLogging: false,
+  invitationFormat: DEFAULT_INVITATION_FORMAT,
 };
 
 /**
@@ -116,17 +156,23 @@ const DIRECTORY_CLIENT_ID = "safelearn-plugin";
  *
  * `firstName` and `lastName` are the two parts `name` is made of. They are
  * carried only so a command can write chosen people in surname order, and are
- * never shown on their own. `undefined` is an instance too old to send them.
+ * never shown on their own. `email` is carried only so the invitation list can
+ * write it, and is never shown at all. `undefined` is an instance too old to
+ * send the field; `""` is a person the directory holds none for.
  */
 interface DirectoryEntry {
   name: string;
   firstName?: string;
   lastName?: string;
+  email?: string;
   roles: Record<string, boolean>;
 }
 
-/** Someone chosen in the picker: their display name, and the parts it is made of where the instance sent them. */
-type ChosenPerson = Pick<DirectoryEntry, "name" | "firstName" | "lastName">;
+/**
+ * Someone chosen in the picker: the whole entry they were chosen from. The
+ * per-name commands write only `name`; the invitation list writes the rest.
+ */
+type ChosenPerson = Pick<DirectoryEntry, "name" | "firstName" | "lastName" | "email" | "roles">;
 
 /**
  * How far a directory fetch on the server has got, as its status endpoint
@@ -1462,6 +1508,7 @@ export default class SafeLearnPlugin extends Plugin {
         name: String(entry?.name ?? ""),
         firstName: typeof entry?.firstName === "string" ? entry.firstName : undefined,
         lastName: typeof entry?.lastName === "string" ? entry.lastName : undefined,
+        email: typeof entry?.email === "string" ? entry.email : undefined,
         roles: entry?.roles ?? {},
       })),
     };
@@ -3153,6 +3200,16 @@ const AUTHORING_COMMANDS: AuthoringCommand[] = [
       ).open(),
   },
   {
+    // A class, as a list in whatever format the tool the invitation is sent
+    // from reads - addresses one per line, comma-separated, or a spreadsheet's
+    // columns.
+    id: "insert-invitation-list",
+    name: "Invitation list…",
+    // What the list is for.
+    icon: "mail",
+    run: (editor, plugin) => new InvitationListModal(plugin, editor).open(),
+  },
+  {
     id: "restrict-selection",
     name: "Restrict selection…",
     // It is about what is closed.
@@ -3393,34 +3450,41 @@ function sectionContentHoldsMarker(raw: string): boolean {
 const NAME_COLLATOR = new Intl.Collator("de", { sensitivity: "base" });
 
 /**
+ * People chosen in the picker, ordered by surname, then given name - the way a
+ * class list is read. A person the instance sent no name parts for is ordered
+ * by their display name instead. The sort is stable, so the choice order
+ * decides only between people the collation cannot tell apart.
+ *
+ * The one ordering rule for every command that writes chosen people.
+ */
+function sortBySurname(chosen: readonly ChosenPerson[]): ChosenPerson[] {
+  const surnameKey = (person: ChosenPerson) =>
+    person.lastName !== undefined && person.lastName.trim() !== "" ? person.lastName : person.name;
+  const givenKey = (person: ChosenPerson) =>
+    person.lastName !== undefined && person.lastName.trim() !== "" ? person.firstName ?? "" : "";
+  return [...chosen].sort(
+    (a, b) =>
+      NAME_COLLATOR.compare(surnameKey(a), surnameKey(b)) ||
+      NAME_COLLATOR.compare(givenKey(a), givenKey(b)) ||
+      NAME_COLLATOR.compare(a.name, b.name)
+  );
+}
+
+/**
  * The order the names a command was given are written in.
  *
- * The people chosen in the picker are ordered by surname, then given name -
- * the way a class list is read - although the picker itself keeps the
- * directory's order, in which a class stands together. A person the instance
- * sent no name parts for is ordered by their display name instead. The sort is
- * stable, so the choice order decides only between people the collation cannot
- * tell apart.
+ * The people chosen in the picker are ordered by surname, then given name
+ * (`sortBySurname`), although the picker itself keeps the directory's order, in
+ * which a class stands together.
  *
  * Typed or pasted names follow, in the order they were given: they carry no
  * surname to sort by, and a pasted list may already be in an order somebody
  * chose. Every name is trimmed, blanks are dropped, and a name already written
  * is not written again.
  */
-function orderForWriting(chosen: ChosenPerson[], typed: string[]): string[] {
-  const surnameKey = (person: ChosenPerson) =>
-    person.lastName !== undefined && person.lastName.trim() !== "" ? person.lastName : person.name;
-  const givenKey = (person: ChosenPerson) =>
-    person.lastName !== undefined && person.lastName.trim() !== "" ? person.firstName ?? "" : "";
-  const sorted = [...chosen].sort(
-    (a, b) =>
-      NAME_COLLATOR.compare(surnameKey(a), surnameKey(b)) ||
-      NAME_COLLATOR.compare(givenKey(a), givenKey(b)) ||
-      NAME_COLLATOR.compare(a.name, b.name)
-  );
-
+function orderForWriting(chosen: readonly ChosenPerson[], typed: string[]): string[] {
   const names: string[] = [];
-  for (const candidate of [...sorted.map((person) => person.name), ...typed]) {
+  for (const candidate of [...sortBySurname(chosen).map((person) => person.name), ...typed]) {
     const trimmed = candidate.trim();
     if (trimmed !== "" && !names.includes(trimmed)) names.push(trimmed);
   }
@@ -3485,124 +3549,52 @@ function reportReservedNames(names: string[]) {
  * is not rendered at all and this dialog is pixel-for-pixel what it was
  * before `plugin-admin-directory-ui` - see `tasks.md` #8.
  */
-class NameListModal extends Modal {
-  /** The wait on a running directory fetch, while one is being waited on - ended in `onClose`, per `tasks.md` #5.4. */
+/**
+ * The directory picker: search, class filter, "Add visible", and the list of
+ * who has been chosen. Shared by every dialog that picks people from the
+ * directory, so each of them gets the same search, the same class filter and
+ * the same wait on a running fetch without a copy of them.
+ *
+ * Built into `home` as soon as it is constructed. `onChange` is called whenever
+ * the chosen list changes; `onUnavailable` whenever the directory turns out to
+ * be unreachable or the search fails, which is where a dialog that has another
+ * way to name people reveals it. `dispose()` ends a wait on a running fetch and
+ * is what a closing dialog calls, so nothing is left polling behind it.
+ */
+class DirectoryPicker {
+  /** The wait on a running directory fetch, while one is being waited on - ended in `dispose`, per `tasks.md` #5.4. */
   private fetchWait: DirectoryFetchWait | null = null;
 
   /**
-   * Who has been chosen from the picker: insertion order, deduplicated on the
-   * trimmed exact name. This is what `confirm` returns where a picker is
-   * shown, in place of both the marked-result set and the textarea that set
-   * used to feed.
+   * Who has been chosen: insertion order, deduplicated on the trimmed exact
+   * name.
    *
    * Insertion order, because that is the directory's order when a class is
    * taken over, and in it a class stands together while it is being picked.
-   * The surname order the document is written in is decided once, in
-   * `confirm` (`orderForWriting`). Keyed on the trimmed exact name because
-   * that is what the picker offers and what the document carries, and folding
-   * it here would only have to be undone when writing.
+   * The surname order a document is written in is decided by whoever reads
+   * `chosen` (`sortBySurname`). Keyed on the trimmed exact name because that
+   * is what the picker offers and what the document carries, and folding it
+   * here would only have to be undone when writing.
    */
-  private readonly chosen: ChosenPerson[] = [];
+  private readonly picked: ChosenPerson[] = [];
 
   constructor(
     private readonly plugin: SafeLearnPlugin,
-    private readonly title: string,
-    private readonly onList: (names: string[], content: string) => void,
-    private readonly options: { withSectionContent?: boolean } = {}
+    home: HTMLElement,
+    private readonly onChange: () => void = () => {},
+    private readonly onUnavailable: () => void = () => {}
   ) {
-    super(plugin.app);
+    void this.build(home);
   }
 
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.createEl("h3", { text: this.title });
+  /** Who has been chosen so far, in the order they were chosen. */
+  get chosen(): readonly ChosenPerson[] {
+    return this.picked;
+  }
 
-    // Where the picker is shown it is the whole answer: a name the directory
-    // has no entry for is written into the document afterwards rather than
-    // typed here. Where it is not, this dialog is the field it always was.
-    const showsPicker = this.plugin.hasLogin();
-    contentEl.createEl("p", {
-      text: showsPicker
-        ? "Click a person to choose them. Click them again in the chosen list to take them back out."
-        : "One name per line. Paste a class list straight in.",
-    });
-
-    // The picker and the typed/pasted field get a home each, in the order they
-    // read in, before either is filled: the field is built on demand (below),
-    // and a container standing in for it keeps it out from under the
-    // confirmation when it is.
-    const pickerHome = contentEl.createDiv({ cls: "safelearn-name-list-picker" });
-    const typedHome = contentEl.createDiv({ cls: "safelearn-name-list-typed" });
-
-    let input: HTMLTextAreaElement | null = null;
-
-    /**
-     * Builds the typed/pasted field, once.
-     *
-     * Called outright where no picker is shown, and from the picker where it
-     * reports `unreachable` or `failed`: a command must not leave a person
-     * with no way to name anybody at all (`plugin-authoring-commands`).
-     */
-    const revealTypedList = () => {
-      if (input) return;
-      input = typedHome.createEl("textarea");
-      input.rows = 10;
-      input.style.width = "100%";
-      input.focus();
-    };
-
-    if (showsPicker) void this.buildDirectorySearch(pickerHome, revealTypedList);
-    else revealTypedList();
-
-    // The content every section starts with, given once: built outright rather
-    // than on demand, because it is wanted whether or not the picker is shown.
-    // Below the names, so the dialog still reads top to bottom - who, then what
-    // each of them gets - with the confirmation below the last field.
-    let sectionContent: HTMLTextAreaElement | null = null;
-    if (this.options.withSectionContent) {
-      const contentHome = contentEl.createDiv({ cls: "safelearn-name-list-content" });
-      contentHome.createEl("p", {
-        text: "Optional: content every section starts with, e.g. a grid to fill in per person.",
-      });
-      sectionContent = contentHome.createEl("textarea", { cls: "safelearn-name-list-content-field" });
-      sectionContent.rows = 6;
-      sectionContent.style.width = "100%";
-    }
-
-    const confirm = () => {
-      const content = sectionContent?.value ?? "";
-      // Refused before anything is closed, so names and content are still
-      // there to correct (`plugin-authoring-commands`).
-      if (sectionContentHoldsMarker(content)) {
-        new Notice(
-          "The content for every section cannot hold a line starting with @@@: it would end the section early and leave the rest outside it.",
-          0
-        );
-        return;
-      }
-      // Both sources where both exist: a picker that goes unreachable after
-      // somebody has already chosen people must not drop them for having
-      // revealed the field. Chosen people in surname order, then typed names
-      // as they were given.
-      const names = orderForWriting(this.chosen, input?.value.split("\n") ?? []);
-      this.close();
-      if (names.length > 0) this.onList(names, content);
-    };
-
-    // On the dialog rather than on the field: where the picker is shown there
-    // is no field to carry it, and Ctrl/Cmd+Enter has to confirm either way
-    // (`plugin-authoring-commands`). A plain Enter stays unhandled here, so it
-    // goes on belonging to the list inside the textarea where that is shown.
-    contentEl.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) confirm();
-    });
-
-    // The confirmation in its container, as in `ColumnCountModal`: the two
-    // dialogs differ in what they ask with and in nothing else.
-    contentEl
-      .createEl("div", { cls: "modal-button-container" })
-      .createEl("button", { text: "Insert" })
-      .addEventListener("click", confirm);
+  dispose() {
+    this.fetchWait?.stop();
+    this.fetchWait = null;
   }
 
   /**
@@ -3616,10 +3608,10 @@ class NameListModal extends Modal {
    * first and break both. `.safelearn-directory-result`, the chosen rows and
    * the "Add visible" control are all clickable `<div>`s for that reason.
    *
-   * `revealTypedList` is the way out where the directory cannot answer at
+   * `onUnavailable` is the way out where the directory cannot answer at
    * all: see `NameListModal.onOpen`.
    */
-  private async buildDirectorySearch(contentEl: HTMLElement, revealTypedList: () => void) {
+  private async build(contentEl: HTMLElement) {
     const container = contentEl.createDiv({ cls: "safelearn-directory-search" });
 
     // Hidden while the directory is reachable or the request was refused (the
@@ -3680,12 +3672,12 @@ class NameListModal extends Modal {
      */
     const renderChosen = () => {
       chosenCount.setText(
-        this.chosen.length === 0
+        this.picked.length === 0
           ? "Nobody chosen yet."
-          : `${this.chosen.length} ${this.chosen.length === 1 ? "person" : "people"} chosen.`
+          : `${this.picked.length} ${this.picked.length === 1 ? "person" : "people"} chosen.`
       );
       chosenList.empty();
-      for (const { name } of this.chosen) {
+      for (const { name } of this.picked) {
         const row = chosenList.createDiv({ cls: "safelearn-directory-chosen-name" });
         // The same attribute the result rows carry, for the same reason: a
         // check finds a specific person without depending on how the row is
@@ -3693,9 +3685,10 @@ class NameListModal extends Modal {
         row.setAttribute("data-safelearn-name", name);
         row.setText(name);
         row.addEventListener("click", () => {
-          const at = this.chosen.findIndex((person) => person.name === name);
-          if (at >= 0) this.chosen.splice(at, 1);
+          const at = this.picked.findIndex((person) => person.name === name);
+          if (at >= 0) this.picked.splice(at, 1);
           renderChosen();
+          this.onChange();
         });
       }
     };
@@ -3703,9 +3696,16 @@ class NameListModal extends Modal {
     /** Moves one person into the chosen list, or leaves them there once if they already are. */
     const choose = (entry: DirectoryEntry) => {
       const trimmed = entry.name.trim();
-      if (trimmed === "" || this.chosen.some((person) => person.name === trimmed)) return;
-      this.chosen.push({ name: trimmed, firstName: entry.firstName, lastName: entry.lastName });
+      if (trimmed === "" || this.picked.some((person) => person.name === trimmed)) return;
+      this.picked.push({
+        name: trimmed,
+        firstName: entry.firstName,
+        lastName: entry.lastName,
+        email: entry.email,
+        roles: entry.roles,
+      });
       renderChosen();
+      this.onChange();
     };
 
     // A fetch in progress is shown in the same line, but never in the same
@@ -3724,11 +3724,11 @@ class NameListModal extends Modal {
       } else if (outcome === "unreachable") {
         status.setText("The directory could not be reached.");
         status.hidden = false;
-        revealTypedList();
+        this.onUnavailable();
       } else if (outcome === "failed") {
         status.setText("The directory search failed.");
         status.hidden = false;
-        revealTypedList();
+        this.onUnavailable();
       } else {
         status.hidden = true;
       }
@@ -3923,12 +3923,520 @@ class NameListModal extends Modal {
     else applyDirectory(initial);
   }
 
+}
+
+class NameListModal extends Modal {
+  /**
+   * The picker, where a login is held. Who has been chosen in it is what
+   * `confirm` returns, in place of both the marked-result set and the textarea
+   * that set used to feed - in surname order, decided once, in `confirm`
+   * (`orderForWriting`).
+   */
+  private picker: DirectoryPicker | null = null;
+
+  constructor(
+    private readonly plugin: SafeLearnPlugin,
+    private readonly title: string,
+    private readonly onList: (names: string[], content: string) => void,
+    private readonly options: { withSectionContent?: boolean } = {}
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.title });
+
+    // Where the picker is shown it is the whole answer: a name the directory
+    // has no entry for is written into the document afterwards rather than
+    // typed here. Where it is not, this dialog is the field it always was.
+    const showsPicker = this.plugin.hasLogin();
+    contentEl.createEl("p", {
+      text: showsPicker
+        ? "Click a person to choose them. Click them again in the chosen list to take them back out."
+        : "One name per line. Paste a class list straight in.",
+    });
+
+    // The picker and the typed/pasted field get a home each, in the order they
+    // read in, before either is filled: the field is built on demand (below),
+    // and a container standing in for it keeps it out from under the
+    // confirmation when it is.
+    const pickerHome = contentEl.createDiv({ cls: "safelearn-name-list-picker" });
+    const typedHome = contentEl.createDiv({ cls: "safelearn-name-list-typed" });
+
+    let input: HTMLTextAreaElement | null = null;
+
+    /**
+     * Builds the typed/pasted field, once.
+     *
+     * Called outright where no picker is shown, and from the picker where it
+     * reports `unreachable` or `failed`: a command must not leave a person
+     * with no way to name anybody at all (`plugin-authoring-commands`).
+     */
+    const revealTypedList = () => {
+      if (input) return;
+      input = typedHome.createEl("textarea");
+      input.rows = 10;
+      input.style.width = "100%";
+      input.focus();
+    };
+
+    if (showsPicker) this.picker = new DirectoryPicker(this.plugin, pickerHome, undefined, revealTypedList);
+    else revealTypedList();
+
+    // The content every section starts with, given once: built outright rather
+    // than on demand, because it is wanted whether or not the picker is shown.
+    // Below the names, so the dialog still reads top to bottom - who, then what
+    // each of them gets - with the confirmation below the last field.
+    let sectionContent: HTMLTextAreaElement | null = null;
+    if (this.options.withSectionContent) {
+      const contentHome = contentEl.createDiv({ cls: "safelearn-name-list-content" });
+      contentHome.createEl("p", {
+        text: "Optional: content every section starts with, e.g. a grid to fill in per person.",
+      });
+      sectionContent = contentHome.createEl("textarea", { cls: "safelearn-name-list-content-field" });
+      sectionContent.rows = 6;
+      sectionContent.style.width = "100%";
+    }
+
+    const confirm = () => {
+      const content = sectionContent?.value ?? "";
+      // Refused before anything is closed, so names and content are still
+      // there to correct (`plugin-authoring-commands`).
+      if (sectionContentHoldsMarker(content)) {
+        new Notice(
+          "The content for every section cannot hold a line starting with @@@: it would end the section early and leave the rest outside it.",
+          0
+        );
+        return;
+      }
+      // Both sources where both exist: a picker that goes unreachable after
+      // somebody has already chosen people must not drop them for having
+      // revealed the field. Chosen people in surname order, then typed names
+      // as they were given.
+      const names = orderForWriting(this.picker?.chosen ?? [], input?.value.split("\n") ?? []);
+      this.close();
+      if (names.length > 0) this.onList(names, content);
+    };
+
+    // On the dialog rather than on the field: where the picker is shown there
+    // is no field to carry it, and Ctrl/Cmd+Enter has to confirm either way
+    // (`plugin-authoring-commands`). A plain Enter stays unhandled here, so it
+    // goes on belonging to the list inside the textarea where that is shown.
+    contentEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) confirm();
+    });
+
+    // The confirmation in its container, as in `ColumnCountModal`: the two
+    // dialogs differ in what they ask with and in nothing else.
+    contentEl
+      .createEl("div", { cls: "modal-button-container" })
+      .createEl("button", { text: "Insert" })
+      .addEventListener("click", confirm);
+  }
+
   onClose() {
     // A dialog nobody is looking at must leave nothing polling behind it.
-    this.fetchWait?.stop();
-    this.fetchWait = null;
+    this.picker?.dispose();
+    this.picker = null;
     this.contentEl.empty();
   }
+}
+
+// ################### Invitation list ###################
+
+/**
+ * Resolves the escapes a format text may carry: `\n` is a line break, `\t` a
+ * tab and `\\` a backslash. Every other character, a backslash before anything
+ * else included, stands for itself.
+ *
+ * One left-to-right pass, so `\\n` is a backslash followed by `n` and not a
+ * backslash followed by a line break.
+ */
+function unescapeFormatText(text: string): string {
+  return text.replace(/\\([nt\\])/g, (_, escaped: string) =>
+    escaped === "n" ? "\n" : escaped === "t" ? "\t" : "\\"
+  );
+}
+
+/** What one field of one person is written as: empty where the person has no value for it. */
+function invitationFieldValue(person: ChosenPerson, field: InvitationField): string {
+  switch (field) {
+    case "firstName":
+      return person.firstName ?? "";
+    case "lastName":
+      return person.lastName ?? "";
+    case "email":
+      return person.email ?? "";
+    case "class":
+      // The values the picker's class filter offers, in alphabetical order.
+      return classLikeValues([{ name: person.name, roles: person.roles }]).join("/");
+  }
+}
+
+/** What `formatInvitationList` wrote, and what the author is told about it. */
+interface InvitationList {
+  text: string;
+  /** How many entries were written. */
+  entries: number;
+  /** For each switched-on field, how many entries had it empty. */
+  emptyFields: Map<InvitationField, number>;
+  /** Whether the instance sent an address for anybody at all, which is how an instance predating them shows. */
+  addressesSent: boolean;
+}
+
+/**
+ * The invitation list for `people` in `format`: one entry per person, in
+ * surname order, a person chosen twice written once. Each entry is the prefix,
+ * the switched-on fields joined by the field separator, and the postfix; the
+ * entries are joined by the entry separator, which is not written after the
+ * last.
+ *
+ * Values are written as they are, without quoting, even where they contain one
+ * of the texts. A field a person has no value for is written empty, with the
+ * separators around it in place, and counted.
+ *
+ * The preview, the insert and the copy all call this, so what is shown is what
+ * is written.
+ */
+function formatInvitationList(people: readonly ChosenPerson[], format: InvitationFormat): InvitationList {
+  const unique: ChosenPerson[] = [];
+  for (const person of people) {
+    if (!unique.some((other) => other.name.trim() === person.name.trim())) unique.push(person);
+  }
+
+  const fieldSeparator = unescapeFormatText(format.fieldSeparator);
+  const prefix = unescapeFormatText(format.prefix);
+  const postfix = unescapeFormatText(format.postfix);
+  const entrySeparator = unescapeFormatText(format.entrySeparator);
+
+  const emptyFields = new Map<InvitationField, number>();
+  const entries = sortBySurname(unique).map((person) => {
+    const values = format.fields.map((field) => {
+      const value = invitationFieldValue(person, field);
+      if (value === "") emptyFields.set(field, (emptyFields.get(field) ?? 0) + 1);
+      return value;
+    });
+    return prefix + values.join(fieldSeparator) + postfix;
+  });
+
+  return {
+    text: entries.join(entrySeparator),
+    entries: entries.length,
+    emptyFields,
+    addressesSent: unique.some((person) => person.email !== undefined),
+  };
+}
+
+/**
+ * What the author is told about the empty fields in a list just written or
+ * copied, or `null` where there were none.
+ *
+ * Where the instance sent no address for anybody, it says so rather than
+ * counting every entry: the count would be the size of the list and would read
+ * as a fault in the directory.
+ */
+function invitationEmptyFieldsNotice(list: InvitationList): string | null {
+  const parts: string[] = [];
+  for (const { field, label } of INVITATION_FIELDS) {
+    const count = list.emptyFields.get(field) ?? 0;
+    if (count === 0) continue;
+    if (field === "email" && !list.addressesSent) {
+      parts.push("this instance does not send e-mail addresses, so that field was left empty in every entry");
+    } else {
+      parts.push(`${count} ${count === 1 ? "entry has" : "entries have"} an empty ${label.toLowerCase()}`);
+    }
+  }
+  if (parts.length === 0) return null;
+  const sentence = parts.join("; ");
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1) + ".";
+}
+
+/**
+ * A format read back from `data.json`, with anything that is not shaped like
+ * one replaced by the default's value: the file is the author's to edit, and a
+ * dialog that cannot open is worse than one that forgot a text.
+ */
+function readInvitationFormat(stored: unknown): InvitationFormat {
+  const source = (stored ?? {}) as Record<string, unknown>;
+  const text = (key: keyof Omit<InvitationFormat, "fields">) =>
+    typeof source[key] === "string" ? (source[key] as string) : DEFAULT_INVITATION_FORMAT[key];
+  const known = new Set(INVITATION_FIELDS.map(({ field }) => field));
+  const fields = Array.isArray(source.fields)
+    ? source.fields.filter((field, at, all): field is InvitationField => known.has(field) && all.indexOf(field) === at)
+    : [...DEFAULT_INVITATION_FORMAT.fields];
+  return {
+    fields,
+    fieldSeparator: text("fieldSeparator"),
+    prefix: text("prefix"),
+    postfix: text("postfix"),
+    entrySeparator: text("entrySeparator"),
+  };
+}
+
+/** How many entries the preview shows: enough to judge a format by, few enough to stay above the confirmations. */
+const INVITATION_PREVIEW_ENTRIES = 5;
+
+/** Who the preview is built from while nobody is chosen, so a format can be judged before anybody is picked. */
+const INVITATION_PLACEHOLDER: ChosenPerson = Object.freeze({
+  name: "Anna Beispiel",
+  firstName: "Anna",
+  lastName: "Beispiel",
+  email: "anna.beispiel@example.org",
+  roles: { student: true, "1A": true },
+});
+
+/** The entry separator's ready choices, by the text they store. Anything else is "Custom". */
+const ENTRY_SEPARATOR_PRESETS: { value: string; label: string; text: string }[] = [
+  { value: "line-break", label: "Line break", text: "\\n" },
+  { value: "comma", label: "Comma", text: "," },
+];
+
+/**
+ * Writes the people chosen in the directory picker as a list, in a format the
+ * author describes: which fields, in which order, and what stands between,
+ * before and after them. Inserted at the cursor or copied to the clipboard.
+ *
+ * There is no typed field: a typed name carries none of the fields the list
+ * consists of. Without a login the dialog says the command needs one and
+ * cannot be confirmed.
+ */
+class InvitationListModal extends Modal {
+  private picker: DirectoryPicker | null = null;
+
+  constructor(
+    private readonly plugin: SafeLearnPlugin,
+    private readonly editor: Editor
+  ) {
+    super(plugin.app);
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("safelearn-invitation-list");
+    contentEl.createEl("h3", { text: "Invitation list" });
+
+    const stored = readInvitationFormat(this.plugin.data.invitationFormat);
+    // Every field, switched on or not, in the order its row stands. A field
+    // switched off keeps its place, so switching it back on puts it back where
+    // it was. The ones the last list did not write follow in their usual order.
+    const order: InvitationField[] = [
+      ...stored.fields,
+      ...INVITATION_FIELDS.map(({ field }) => field).filter((field) => !stored.fields.includes(field)),
+    ];
+    const switchedOn = new Set(stored.fields);
+
+    const hasLogin = this.plugin.hasLogin();
+    if (hasLogin) {
+      contentEl.createEl("p", { text: "Click a person to choose them. Click them again in the chosen list to take them back out." });
+      const pickerHome = contentEl.createDiv({ cls: "safelearn-invitation-picker" });
+      this.picker = new DirectoryPicker(this.plugin, pickerHome, () => refresh());
+    } else {
+      contentEl.createEl("p", {
+        cls: "safelearn-invitation-needs-login",
+        text: "This command needs a directory login. Set the instance and log in in the SafeLearn settings.",
+      });
+    }
+
+    // The fields: one row each, a checkbox to switch it on and buttons to move it.
+    contentEl.createEl("h4", { text: "Fields" });
+    const fieldRows = contentEl.createDiv({ cls: "safelearn-invitation-fields" });
+    const renderFields = () => {
+      fieldRows.empty();
+      order.forEach((field, at) => {
+        const label = INVITATION_FIELDS.find((known) => known.field === field)?.label ?? field;
+        const row = fieldRows.createDiv({ cls: "safelearn-invitation-field" });
+        row.setAttribute("data-safelearn-field", field);
+        const checkbox = row.createEl("input", { type: "checkbox", cls: "safelearn-invitation-field-checkbox" });
+        checkbox.checked = switchedOn.has(field);
+        checkbox.setAttribute("aria-label", label);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) switchedOn.add(field);
+          else switchedOn.delete(field);
+          refresh();
+        });
+        row.createSpan({ cls: "safelearn-invitation-field-label", text: label });
+        const move = (by: number) => {
+          const to = at + by;
+          if (to < 0 || to >= order.length) return;
+          [order[at], order[to]] = [order[to], order[at]];
+          renderFields();
+          refresh();
+          // Keep the focus on the button that was used, now in its new row, so
+          // a field can be moved several places from the keyboard.
+          (fieldRows.children[to]?.querySelector(by < 0 ? ".safelearn-invitation-field-up" : ".safelearn-invitation-field-down") as HTMLElement | null)?.focus();
+        };
+        const up = row.createEl("button", { cls: "safelearn-invitation-field-up", text: "↑" });
+        up.setAttribute("aria-label", `Move ${label} up`);
+        up.disabled = at === 0;
+        up.addEventListener("click", () => move(-1));
+        const down = row.createEl("button", { cls: "safelearn-invitation-field-down", text: "↓" });
+        down.setAttribute("aria-label", `Move ${label} down`);
+        down.disabled = at === order.length - 1;
+        down.addEventListener("click", () => move(1));
+      });
+    };
+    renderFields();
+
+    // The texts around the fields. Each is a single line; `\n` and `\t` say
+    // where a line break or a tab goes.
+    contentEl.createEl("h4", { text: "Texts" });
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "In every text, \\n stands for a line break, \\t for a tab and \\\\ for a backslash.",
+    });
+    const texts = contentEl.createDiv({ cls: "safelearn-invitation-texts" });
+    const textInput = (key: string, label: string, value: string) => {
+      const row = texts.createDiv({ cls: "safelearn-invitation-text" });
+      row.setAttribute("data-safelearn-text", key);
+      row.createSpan({ text: label });
+      const input = row.createEl("input", { type: "text" });
+      input.value = value;
+      input.addEventListener("input", () => refresh());
+      return { row, input };
+    };
+    const fieldSeparator = textInput("field-separator", "Between fields", stored.fieldSeparator).input;
+    const prefix = textInput("prefix", "Before each entry", stored.prefix).input;
+    const postfix = textInput("postfix", "After each entry", stored.postfix).input;
+
+    const entrySeparatorRow = texts.createDiv({ cls: "safelearn-invitation-text" });
+    entrySeparatorRow.setAttribute("data-safelearn-text", "entry-separator");
+    entrySeparatorRow.createSpan({ text: "Between entries" });
+    const entrySeparatorChoice = entrySeparatorRow.createEl("select", { cls: "dropdown" });
+    for (const preset of ENTRY_SEPARATOR_PRESETS) {
+      entrySeparatorChoice.createEl("option", { value: preset.value, text: preset.label });
+    }
+    entrySeparatorChoice.createEl("option", { value: "custom", text: "Custom" });
+    const entrySeparatorCustom = entrySeparatorRow.createEl("input", { type: "text" });
+    const storedPreset = ENTRY_SEPARATOR_PRESETS.find((preset) => preset.text === stored.entrySeparator);
+    entrySeparatorChoice.value = storedPreset?.value ?? "custom";
+    entrySeparatorCustom.value = storedPreset ? "" : stored.entrySeparator;
+    const showCustom = () => {
+      entrySeparatorCustom.hidden = entrySeparatorChoice.value !== "custom";
+    };
+    showCustom();
+    entrySeparatorChoice.addEventListener("change", () => {
+      showCustom();
+      if (!entrySeparatorCustom.hidden) entrySeparatorCustom.focus();
+      refresh();
+    });
+    entrySeparatorCustom.addEventListener("input", () => refresh());
+
+    /** The format as the dialog currently describes it. */
+    const currentFormat = (): InvitationFormat => ({
+      fields: order.filter((field) => switchedOn.has(field)),
+      fieldSeparator: fieldSeparator.value,
+      prefix: prefix.value,
+      postfix: postfix.value,
+      entrySeparator:
+        ENTRY_SEPARATOR_PRESETS.find((preset) => preset.value === entrySeparatorChoice.value)?.text ??
+        entrySeparatorCustom.value,
+    });
+
+    // What will be written, as it will be written: a `<pre>` shows a line
+    // break as a line break and a tab as a tab.
+    contentEl.createEl("h4", { text: "Preview" });
+    const preview = contentEl.createEl("pre", { cls: "safelearn-invitation-preview" });
+    const previewNote = contentEl.createDiv({ cls: "safelearn-invitation-preview-note setting-item-description" });
+
+    const buttons = contentEl.createDiv({ cls: "modal-button-container" });
+    const insertButton = buttons.createEl("button", { cls: "mod-cta", text: "Insert" });
+    const copyButton = buttons.createEl("button", { text: "Copy" });
+
+    const confirmable = () => hasLogin && currentFormat().fields.length > 0;
+
+    // Called from the picker's `onChange` too, which only fires once somebody
+    // has clicked - by then everything this reads exists.
+    const refresh = () => {
+      const format = currentFormat();
+      const chosen = sortBySurname(this.picker?.chosen ?? []);
+      const shown = chosen.length > 0 ? chosen.slice(0, INVITATION_PREVIEW_ENTRIES) : [INVITATION_PLACEHOLDER];
+      preview.setText(formatInvitationList(shown, format).text);
+      previewNote.setText(
+        chosen.length === 0
+          ? "Nobody chosen yet - shown with a placeholder person."
+          : chosen.length > INVITATION_PREVIEW_ENTRIES
+            ? `The first ${INVITATION_PREVIEW_ENTRIES} of ${chosen.length} entries.`
+            : ""
+      );
+      insertButton.disabled = !confirmable();
+      copyButton.disabled = !confirmable();
+    };
+
+    /**
+     * Writes or copies the list. Nothing happens with nobody chosen, and
+     * nothing where the dialog is not confirmable. The format is remembered on
+     * either confirmation, and only then: a format abandoned by closing the
+     * dialog does not replace the one last used.
+     */
+    const confirm = async (how: "insert" | "copy") => {
+      if (!confirmable()) return;
+      const people = this.picker?.chosen ?? [];
+      if (people.length === 0) return;
+      const format = currentFormat();
+      const list = formatInvitationList(people, format);
+
+      if (how === "copy") {
+        try {
+          await navigator.clipboard.writeText(list.text);
+        } catch (error) {
+          // The dialog stays open, so nothing chosen is lost and the list can
+          // still be inserted instead.
+          new Notice(`The list could not be copied to the clipboard: ${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
+        new Notice(`Copied the invitation list: ${list.entries} ${list.entries === 1 ? "entry" : "entries"}.`);
+      } else {
+        insertInvitationList(this.editor, list.text);
+      }
+
+      this.plugin.data.invitationFormat = format;
+      void this.plugin.saveSettings();
+      const notice = invitationEmptyFieldsNotice(list);
+      if (notice) new Notice(notice, 0);
+      this.close();
+    };
+
+    insertButton.addEventListener("click", () => void confirm("insert"));
+    copyButton.addEventListener("click", () => void confirm("copy"));
+    contentEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        void confirm("insert");
+      }
+    });
+
+    refresh();
+  }
+
+  onClose() {
+    // A dialog nobody is looking at must leave nothing polling behind it.
+    this.picker?.dispose();
+    this.picker = null;
+    this.contentEl.empty();
+  }
+}
+
+/**
+ * Writes the list at the cursor, replacing a selection, and leaves the cursor
+ * after it.
+ *
+ * Not above a directive that gates the file, for the reason `writeLines` gives:
+ * with nothing selected and the cursor at the very top, the list goes on a line
+ * of its own below the directive.
+ */
+function insertInvitationList(editor: Editor, text: string) {
+  let from = editor.getCursor("from");
+  let to = editor.getCursor("to");
+  let written = text;
+  const collapsed = from.line === to.line && from.ch === to.ch;
+  if (collapsed && from.line === 0 && from.ch === 0 && isFileLevelDirective(editor.getLine(0))) {
+    from = { line: 0, ch: editor.getLine(0).length };
+    to = from;
+    written = "\n" + text;
+  }
+  editor.replaceRange(written, from, to);
+  editor.setCursor(editor.offsetToPos(editor.posToOffset(from) + written.length));
 }
 
 /**

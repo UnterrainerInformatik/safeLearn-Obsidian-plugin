@@ -589,6 +589,42 @@
   background-color: var(--background-modifier-hover);
 }
 
+/* ---- Invitation list ---- */
+
+.safelearn-invitation-field,
+.safelearn-invitation-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.safelearn-invitation-field-label,
+.safelearn-invitation-text > span {
+  flex: 1;
+}
+
+.safelearn-invitation-text > input[type="text"] {
+  width: 12em;
+  font-family: var(--font-monospace);
+}
+
+.safelearn-invitation-text > input[hidden] {
+  display: none;
+}
+
+.safelearn-invitation-preview {
+  max-height: 140px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s, 4px);
+  font-family: var(--font-monospace);
+  white-space: pre;
+  tab-size: 4;
+}
+
 /* `DirectoryInfoModal`'s "Teachers" and "Classes" sections - a plain list,
    scrollable rather than growing the modal without bound for a large
    directory (`design.md` of `plugin-directory-info-page`, Risks). */
