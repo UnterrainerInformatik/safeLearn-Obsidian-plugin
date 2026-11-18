@@ -1866,7 +1866,7 @@ function blockMarkerPattern(): RegExp {
   return /##(?:side-by-side-(?:start|end)|separator)/g;
 }
 
-/** `inlinePermissionRegex`: a line that is `@@@`, with or without the roles it names. */
+/** `resolveInlineBlocks`: a line that is `@@@`, with or without the roles it names. */
 function permissionMarkerPattern(): RegExp {
   return /^[ \t]*@@@.*$/gm;
 }
@@ -1916,7 +1916,61 @@ function closesPermissionBlock(text: string): boolean {
   return /^[ \t]*@@@[ \t]*$/.test(text);
 }
 
-/** `parseFirstLineForPermissions` and `inlinePermissionRegex`: what a directive line opens with. */
+/**
+ * The fence a line opens, or null: three or more backticks or tildes at its
+ * start. `fenceOpenedBy` in the server's `obsidian.js`, rule for rule - a
+ * backtick fence's info string holds no backtick, as CommonMark has it.
+ */
+function fenceOpenedBy(text: string): { char: string; length: number } | null {
+  const match = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(text);
+  if (!match) return null;
+  if (match[1][0] === "`" && match[2].includes("`")) return null;
+  return { char: match[1][0], length: match[1].length };
+}
+
+/** Whether a line closes `fence`: as many of its characters or more, and nothing else. */
+function closesFence(text: string, fence: { char: string; length: number }): boolean {
+  const match = /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(text);
+  return match !== null && match[1][0] === fence.char && match[1].length >= fence.length;
+}
+
+/**
+ * The lines standing inside a closed fenced code block, fence lines included.
+ *
+ * A marker line in there is a syntax example, not a marker, and the server reads
+ * it as one (`permission-block-grammar`). A fence that is never closed protects
+ * nothing: the server pairs fences before it reads a marker and drops an opening
+ * fence with no partner, because otherwise every `@@@ #exam` below it would be
+ * code shown to everyone. This is the same pairing, so the plugin never frames
+ * less than the server hides.
+ */
+function fencedLines(lines: LineSource, first: number): Set<number> {
+  const fenced = new Set<number>();
+  let i = first;
+  while (i <= lines.count) {
+    const fence = fenceOpenedBy(lines.at(i));
+    if (fence === null) {
+      i += 1;
+      continue;
+    }
+    let close = -1;
+    for (let j = i + 1; j <= lines.count; j++) {
+      if (closesFence(lines.at(j), fence)) {
+        close = j;
+        break;
+      }
+    }
+    if (close === -1) {
+      i += 1;
+      continue;
+    }
+    for (let k = i; k <= close; k++) fenced.add(k);
+    i = close + 1;
+  }
+  return fenced;
+}
+
+/** `parseFirstLineForPermissions` and `resolveInlineBlocks`: what a directive line opens with. */
 function directiveOpeningPattern(): RegExp {
   return /^[ \t]*@@@/;
 }
@@ -2278,7 +2332,7 @@ async function hideTags(el: HTMLElement, ctx: MarkdownPostProcessorContext, plug
   }
 
   const lines = linesOfText(info.text);
-  const { blocks, fileDirective } = resolveBlocks(lines);
+  const { blocks, fileDirective, fenced } = resolveBlocks(lines);
   // `getSectionInfo` counts lines from zero and names the last line of the
   // section inclusive; everything else in this file counts from one.
   const from = info.lineStart + 1;
@@ -2330,7 +2384,7 @@ async function hideTags(el: HTMLElement, ctx: MarkdownPostProcessorContext, plug
     if (line === fileDirective || opensBlock) {
       const entries = parseDirectiveEntries(text);
       if (entries !== null) headings.set(text.trim(), { entries, fileLevel: line === fileDirective });
-    } else if (closesPermissionBlock(text)) {
+    } else if (!fenced.has(line) && closesPermissionBlock(text)) {
       closings.add(text.trim());
     }
   }
@@ -2448,6 +2502,9 @@ function stripTagText(el: HTMLElement) {
     // A heading this plugin built is not rendered document text, and the entry
     // it carries is the author's own spelling rather than a tag to be removed.
     if (node.parentElement?.closest(".safelearn-heading")) continue;
+    // Code is shown as written: a marker in a code block or in inline code is
+    // an example, and the server leaves it standing (`permission-block-grammar`).
+    if (node.parentElement?.closest("code, pre")) continue;
     const original = node.data;
     const remaining = withoutTags(original);
     if (remaining !== original) node.data = remaining;
@@ -2560,7 +2617,7 @@ type Block = {
  * in one block at the top of this file is that a tag form with two rules is what
  * let the editor and the reading view drift apart.
  */
-type DocumentStructure = { blocks: Block[]; fileDirective: number | null };
+type DocumentStructure = { blocks: Block[]; fileDirective: number | null; fenced: Set<number> };
 
 /**
  * The lines of a document, however the caller happens to hold them.
@@ -2574,7 +2631,9 @@ type DocumentStructure = { blocks: Block[]; fileDirective: number | null };
 type LineSource = { count: number; at(line: number): string };
 
 function linesOfText(text: string): LineSource {
-  const lines = text.split("\n");
+  // A trailing carriage return is not part of what a line says, as the server
+  // ignores it when it reads a marker.
+  const lines = text.split("\n").map((line) => line.replace(/\r$/, ""));
   return { count: lines.length, at: (line) => lines[line - 1] ?? "" };
 }
 
@@ -2607,6 +2666,9 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
   const fileDirective = isFileLevelDirective(lines.at(1)) ? 1 : null;
   const start = fileDirective === null ? 1 : 2;
 
+  // Marker lines inside a closed code fence are code, for a permission block.
+  const fenced = fencedLines(lines, start);
+
   let permissionFrom = -1;
   let sideFrom = -1;
   let separators: number[] = [];
@@ -2614,7 +2676,9 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
   for (let i = start; i <= lines.count; i++) {
     const text = lines.at(i);
 
-    if (permissionFrom === -1) {
+    if (fenced.has(i)) {
+      // Neither an opening nor a closing permission marker.
+    } else if (permissionFrom === -1) {
       if (opensPermissionBlock(text)) {
         permissionFrom = i;
         continue;
@@ -2652,7 +2716,7 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
     blocks.push({ kind: "side-by-side", from: sideFrom, to: lines.count, closed: false, separators });
   }
 
-  return { blocks, fileDirective };
+  return { blocks, fileDirective, fenced };
 }
 
 // ################### What the editor marks ###################
