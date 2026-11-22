@@ -103,11 +103,17 @@
   font-style: italic;
 }
 
-/* The switch prefix with none of the three names behind it: it decides nothing. */
+/*
+ * The switch prefix with none of the three names behind it - a typo or a retired
+ * name such as #exam. The server hides the block from everyone, so it is an
+ * error: struck in the error colour, wavy like a broken window.
+ */
 .safelearn-entry-unresolved {
-  background-color: transparent;
+  background-color: var(--entry-broken-bg);
   border-bottom-style: dotted;
-  color: var(--entry-unresolved-fg);
+  border-bottom-color: var(--entry-broken-underline);
+  text-decoration: underline wavy var(--entry-broken-underline);
+  text-decoration-skip-ink: none;
 }
 
 /*
@@ -304,16 +310,18 @@
   opacity: 0.7;
 }
 
-/* The switch prefix with none of the three names behind it: it decides nothing. */
+/* The switch prefix with none of the three names behind it: the server hides the block from everyone. */
 .safelearn-chip-unresolved {
-  background-color: transparent;
+  background-color: var(--entry-broken-bg);
   border-style: dotted;
-  color: var(--entry-unresolved-fg);
+  border-color: var(--entry-broken-underline);
+  text-decoration: underline wavy var(--entry-broken-underline);
+  text-decoration-skip-ink: none;
 }
 
 .safelearn-chip-unresolved::before {
-  content: "∅ ";
-  opacity: 0.7;
+  content: "⛔ ";
+  text-decoration: none;
 }
 
 /* A window the server will discard - which leaves the entry permanently active. */

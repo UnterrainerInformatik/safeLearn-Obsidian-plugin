@@ -1,6 +1,6 @@
 {
   "name": "safelearn-plugin",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "main": "main.js",
   "type": "module",
   "scripts": {

@@ -1940,7 +1940,7 @@ function closesFence(text: string, fence: { char: string; length: number }): boo
  * A marker line in there is a syntax example, not a marker, and the server reads
  * it as one (`permission-block-grammar`). A fence that is never closed protects
  * nothing: the server pairs fences before it reads a marker and drops an opening
- * fence with no partner, because otherwise every `@@@ #exam` below it would be
+ * fence with no partner, because otherwise every `@@@ #variant-private` below it would be
  * code shown to everyone. This is the same pairing, so the plugin never frames
  * less than the server hides.
  */
@@ -2005,10 +2005,15 @@ function dateTimeSeparatorPattern(): RegExp {
  *
  * It takes *every* entry carrying the prefix out of the role test, whatever
  * follows it, and then resolves exactly these three. An entry carrying the
- * prefix and none of these names therefore restricts nobody and switches
- * nothing, which is a third thing to be and is marked as one.
+ * prefix and none of these names - a typo, or one of the retired names `#exam`,
+ * `#practice` and `#answer` - fails closed: the server hides the block from
+ * every reader, an admin included. That is an error, and is marked as one.
  */
-const VIEW_SWITCHES = ["exam", "practice", "answer"];
+const VIEW_SWITCHES = ["variant-private", "variant-public", "optional"];
+
+/** The tooltip of an unknown switch: what the server does with its block. */
+const UNKNOWN_SWITCH_TITLE =
+  "Unknown view switch: SafeLearn hides this block from everyone. Known: #variant-private, #variant-public, #optional.";
 
 /**
  * `namesReservedForRoles` (`utils.js`): the five a display name may not be.
@@ -2296,7 +2301,10 @@ function buildChip(entry: DirectiveEntry): HTMLElement {
   if (entry.timed) classes.push("safelearn-chip-timed");
   if (entry.brokenWindow) classes.push("safelearn-chip-broken");
   if (entry.viewSwitch) classes.push("safelearn-chip-switch");
-  if (entry.viewSwitch && !entry.resolvedSwitch) classes.push("safelearn-chip-unresolved");
+  if (entry.viewSwitch && !entry.resolvedSwitch) {
+    classes.push("safelearn-chip-unresolved");
+    chip.title = UNKNOWN_SWITCH_TITLE;
+  }
   chip.className = classes.join(" ");
   chip.textContent = entry.text;
   return chip;
@@ -2434,7 +2442,7 @@ function sectionBody(el: HTMLElement): HTMLElement {
  * between them. A run is what a line became, and each run carries the break that
  * ended it, so removing a line removes the gap it occupied with it.
  *
- * A run rather than a node, because one line is not one node. `#exam` in a
+ * A run rather than a node, because one line is not one node. `#optional` in a
  * directive is rendered as a tag link of its own, so the line arrives as text,
  * an anchor and more text - and a rule that looked at single text nodes would
  * see three fragments of a directive and recognize none of them.
@@ -2978,7 +2986,11 @@ function buildDecorations(view: EditorView, marking: DocumentMarking): Decoratio
       const classes = entryClasses(entry);
       if (classes === null) continue;
       ranges.push(
-        Decoration.mark({ class: classes }).range(line.from + entry.index, line.from + entry.index + entry.length)
+        Decoration.mark(
+          entry.viewSwitch && !entry.resolvedSwitch
+            ? { class: classes, attributes: { title: UNKNOWN_SWITCH_TITLE } }
+            : { class: classes }
+        ).range(line.from + entry.index, line.from + entry.index + entry.length)
       );
     }
   }
