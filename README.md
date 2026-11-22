@@ -40,7 +40,7 @@ With text selected, a side-by-side command encloses it whole and puts the separa
 | --- | --- |
 | Plain chip | A permanent grant. |
 | Dashed chip, stopwatch | Carries a time window — the block appears or disappears with nobody editing it. It never changes with the clock: a window that has closed looks like one that has not opened. |
-| Red chip, warning | A window SafeLearn **cannot read**. It drops the window and keeps the entry, so the block is granted permanently. Nothing else anywhere tells you. |
+| Red chip, warning | A window SafeLearn **cannot read**. The entry is closed for good: it admits nobody, at any time. The other entries of the directive are unaffected. The server also logs it as `[Permissions] unreadable window`. |
 | Italic chip, arrows | A view switch (`#variant-private`, `#variant-public`, `#optional`) — a variant of the document, not an audience. |
 | Red dotted chip, no-entry sign | A `#` switch SafeLearn does not know — a typo, or a retired name such as `#exam`. SafeLearn hides the block from **everyone**. |
 | Struck through | An entry SafeLearn discards entirely. |
