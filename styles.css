@@ -88,7 +88,7 @@
   border-bottom-color: var(--entry-timed-border);
 }
 
-/* A window the server will discard - which leaves the entry permanently active. */
+/* A window the server cannot read - which closes the entry for good: it admits nobody. */
 .safelearn-entry-broken {
   background-color: var(--entry-broken-bg);
   border-bottom-color: transparent;
@@ -105,8 +105,8 @@
 
 /*
  * The switch prefix with none of the three names behind it - a typo or a retired
- * name such as #exam. The server hides the block from everyone, so it is an
- * error: struck in the error colour, wavy like a broken window.
+ * name such as #exam - or both variants in one directive. The server hides the
+ * block from everyone, so it is an error: struck in the error colour, wavy like a broken window.
  */
 .safelearn-entry-unresolved {
   background-color: var(--entry-broken-bg);
@@ -310,7 +310,7 @@
   opacity: 0.7;
 }
 
-/* The switch prefix with none of the three names behind it: the server hides the block from everyone. */
+/* The switch prefix with none of the three names behind it, or both variants at once: the server hides the block from everyone. */
 .safelearn-chip-unresolved {
   background-color: var(--entry-broken-bg);
   border-style: dotted;
@@ -324,7 +324,7 @@
   text-decoration: none;
 }
 
-/* A window the server will discard - which leaves the entry permanently active. */
+/* A window the server cannot read - which closes the entry for good: it admits nobody. */
 .safelearn-chip-broken {
   background-color: var(--entry-broken-bg);
   border-color: var(--entry-broken-underline);
@@ -338,7 +338,8 @@
 }
 
 /*
- * A token the server does not read as an entry at all. It is shown rather than
+ * A token the server does not read as an entry - kept only as a closed entry
+ * that admits nobody. It is shown rather than
  * left out: where the characters are still on the page a discarded entry is told
  * apart by the marking its neighbours have and it does not, but here they are
  * gone, and omitting it would hide the mistake instead of showing it.

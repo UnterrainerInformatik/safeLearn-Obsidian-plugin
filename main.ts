@@ -2016,6 +2016,26 @@ const UNKNOWN_SWITCH_TITLE =
   "Unknown view switch: SafeLearn hides this block from everyone. Known: #variant-private, #variant-public, #optional.";
 
 /**
+ * The tooltip of `#variant-private` and `#variant-public` in one directive. The
+ * server combines a directive's switches with AND, and the two are complements,
+ * so no reader ever satisfies both.
+ */
+const BOTH_VARIANTS_TITLE =
+  "Both variants in one directive: SafeLearn hides this block from everyone. A reader sees exactly one of #variant-private and #variant-public.";
+
+/**
+ * The tooltip of a window the server cannot read. It used to mean the entry was
+ * permanently active; the server now keeps the entry as closed for good
+ * (`role-resolution`), so it admits nobody.
+ */
+const BROKEN_WINDOW_TITLE =
+  "SafeLearn cannot read this window, in whole or in part: the entry is closed and admits nobody.";
+
+/** The tooltip of a token the server cannot read as an entry at all. */
+const DISCARDED_ENTRY_TITLE =
+  "SafeLearn cannot read this entry: it is kept as a closed entry and admits nobody.";
+
+/**
  * `namesReservedForRoles` (`utils.js`): the five a display name may not be.
  *
  * Being addressed by name is a feature - the session's display name enters the
@@ -2062,12 +2082,25 @@ type DirectiveEntry = {
   role: Span | null;
   /** The text between the brackets, as written. Null when the entry has no bracketed part. */
   window: Span | null;
-  /** Whether the server keeps this entry at all, or drops it before anything reads it. */
+  /**
+   * Whether the token reads as an entry at all. The server keeps one that does
+   * not, as a closed entry naming the text in front of its first bracket - so
+   * it admits nobody, and as a written role it can still close a directive.
+   */
   readable: boolean;
   timed: boolean;
+  /** A window was written and the server cannot read it, in whole or in part. */
   brokenWindow: boolean;
+  /**
+   * Whether the server keeps this entry closed at every moment: an unreadable
+   * token, or a broken window. A closed role admits nobody; a closed switch can
+   * never be satisfied.
+   */
+  closed: boolean;
   viewSwitch: boolean;
   resolvedSwitch: boolean;
+  /** One of `#variant-private` and `#variant-public` in a directive naming both. */
+  conflictingSwitch: boolean;
 };
 
 /**
@@ -2116,10 +2149,10 @@ function readsAsTime(value: string): boolean {
 /**
  * Whether `parsePermissionWindow` would keep this window.
  *
- * It keeps one as soon as either end reads as a time, and returns null when
- * neither does - and an entry whose window is null is permanently active. So
- * this answers the only question the marking depends on: does the restriction
- * the author wrote take effect at all.
+ * It keeps one only when every end written reads as a time; any other window
+ * makes the entry closed at every moment (`role-resolution`). It used to keep a
+ * window as soon as one end read, and to read none as no window at all - which
+ * made the entry permanently active.
  */
 function readsAsWindow(value: string): boolean {
   const windowText = value.trim();
@@ -2129,7 +2162,7 @@ function readsAsWindow(value: string): boolean {
   }
   const parts = windowText.split(windowSeparatorPattern());
   if (parts.length === 1) return readsAsTime(parts[0]);
-  return readsAsTime(parts[0]) || readsAsTime(parts.slice(1).join(" to "));
+  return readsAsTime(parts[0]) && readsAsTime(parts.slice(1).join(" to "));
 }
 
 /**
@@ -2142,17 +2175,23 @@ function readsAsWindow(value: string): boolean {
 function readDirectiveEntry(token: string, offset: number): DirectiveEntry {
   const trimmed = token.trim();
   const index = offset + (token.length - token.trimStart().length);
+  // What the server names a token it cannot read: the text in front of its
+  // first bracket. An empty token names nothing and is not kept at all.
+  const prefix = trimmed.split(/[\[\]]/)[0];
+  const prefixRole = prefix.trim().toLowerCase();
   const discarded: DirectiveEntry = {
     index,
     length: trimmed.length,
     text: trimmed,
-    role: null,
+    role: trimmed ? { index, length: prefix.trimEnd().length, text: prefixRole } : null,
     window: null,
     readable: false,
     timed: false,
     brokenWindow: false,
-    viewSwitch: false,
-    resolvedSwitch: false,
+    closed: trimmed !== "",
+    viewSwitch: prefixRole.startsWith("#"),
+    resolvedSwitch: prefixRole.startsWith("#") && VIEW_SWITCHES.includes(prefixRole.slice(1)),
+    conflictingSwitch: false,
   };
   if (!trimmed) return discarded;
 
@@ -2189,8 +2228,10 @@ function readDirectiveEntry(token: string, offset: number): DirectiveEntry {
     readable: true,
     timed,
     brokenWindow: window !== null && !timed,
+    closed: window !== null && !timed,
     viewSwitch,
     resolvedSwitch: viewSwitch && VIEW_SWITCHES.includes(roleText.slice(1)),
+    conflictingSwitch: false,
   };
 }
 
@@ -2215,20 +2256,45 @@ function parseDirectiveEntries(text: string): DirectiveEntry[] | null {
     entries.push(readDirectiveEntry(token, offset));
     offset += token.length + 1; // the comma the split took out
   }
+
+  // The server combines a directive's switches with AND, and the two variants
+  // are complements: naming both hides the block from everyone, whatever else
+  // the directive names and in whichever order.
+  const variants = (name: string) => entries.filter((entry) => entry.role?.text === `#${name}`);
+  const both = [...variants("variant-private"), ...variants("variant-public")];
+  if (variants("variant-private").length > 0 && variants("variant-public").length > 0) {
+    for (const entry of both) entry.conflictingSwitch = true;
+  }
   return entries;
+}
+
+/** The tooltip an entry's marking carries, or null for none. */
+function entryTitle(entry: DirectiveEntry): string | null {
+  if (entry.viewSwitch && !entry.resolvedSwitch) return UNKNOWN_SWITCH_TITLE;
+  if (entry.conflictingSwitch) return BOTH_VARIANTS_TITLE;
+  if (!entry.readable) return DISCARDED_ENTRY_TITLE;
+  if (entry.brokenWindow) return BROKEN_WINDOW_TITLE;
+  return null;
 }
 
 /**
  * Whether the server withholds this directive's text from every reader.
  *
- * `removeForbiddenContent` replaces a block whose directive keeps no entry with
- * the empty string, and `resolveFileVisibility` reports a file-level one
- * invisible - in both cases to everyone, an admin included. It is the harshest
- * thing a directive can do and the least visible, which is why it is a
- * conclusion about the line rather than something to infer from each entry.
+ * `removeForbiddenContent` replaces a block with the empty string, and
+ * `resolveFileVisibility` reports a file-level one invisible - in both cases to
+ * everyone, an admin included - when the directive names nothing, when every
+ * entry it names is closed, or when it names roles and every one of them is
+ * closed: the switches beside them do not decide in their place
+ * (`role-resolution`). It is the harshest thing a directive can do and the
+ * least visible, which is why it is a conclusion about the line rather than
+ * something to infer from each entry. Switches that hide the block on their own
+ * - an unknown one, both variants - are marked on the switch instead.
  */
 function withholdsFromEveryone(entries: DirectiveEntry[]): boolean {
-  return !entries.some((entry) => entry.readable);
+  const kept = entries.filter((entry) => entry.text !== "");
+  if (kept.every((entry) => entry.closed)) return true;
+  const roles = kept.filter((entry) => !entry.viewSwitch);
+  return roles.length > 0 && roles.every((entry) => entry.closed);
 }
 
 /** The text with every tag taken out of it, by the same rules the editor marks by. */
@@ -2288,11 +2354,11 @@ function buildHeading(entries: DirectiveEntry[], fileLevel: boolean): HTMLElemen
  * make look sound, and the plugin's only value is that it claims nothing of an
  * entry that the server does not do with it.
  *
- * An entry the server discards is shown too, marked as discarded. Where the
- * characters are on the page, a discarded entry is shown by the marking its
- * neighbours have and it does not - but here the characters are gone, and
- * leaving the entry out would hide from the author that they wrote something the
- * server throws away.
+ * A token the server cannot read is shown too, marked as discarded: the server
+ * keeps it only as a closed entry. Where the characters are on the page, such a
+ * token is shown by the marking its neighbours have and it does not - but here
+ * the characters are gone, and leaving it out would hide from the author that
+ * they wrote something that admits nobody.
  */
 function buildChip(entry: DirectiveEntry): HTMLElement {
   const chip = document.createElement("span");
@@ -2301,10 +2367,11 @@ function buildChip(entry: DirectiveEntry): HTMLElement {
   if (entry.timed) classes.push("safelearn-chip-timed");
   if (entry.brokenWindow) classes.push("safelearn-chip-broken");
   if (entry.viewSwitch) classes.push("safelearn-chip-switch");
-  if (entry.viewSwitch && !entry.resolvedSwitch) {
+  if (entry.viewSwitch && (!entry.resolvedSwitch || entry.conflictingSwitch)) {
     classes.push("safelearn-chip-unresolved");
-    chip.title = UNKNOWN_SWITCH_TITLE;
   }
+  const title = entryTitle(entry);
+  if (title !== null) chip.title = title;
   chip.className = classes.join(" ");
   chip.textContent = entry.text;
   return chip;
@@ -2733,10 +2800,11 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
  * What one entry of a directive is marked with, or null for an entry the server
  * discards.
  *
- * A discarded entry is marked as nothing at all. The only thing a marking on it
- * could say is that the server acts on it, and the server does not: it is
- * dropped before anything reads it, and the entries beside it go on meaning what
- * they meant. So it is shown by the marking its neighbours have and it does not.
+ * A token that does not read as an entry is marked as nothing at all. The
+ * server keeps it only as a closed entry that admits nobody, and the entries
+ * beside it go on meaning what they meant; a marking on it would say it names
+ * somebody. So it is shown by the marking its neighbours have and it does not,
+ * and - if it closes the whole directive - by the line's withheld marking.
  *
  * The rest are attributes on one shared marking rather than a class per
  * combination: the conclusions are independent of one another - an entry can be
@@ -2750,7 +2818,7 @@ function entryClasses(entry: DirectiveEntry): string | null {
   if (entry.timed) classes.push("safelearn-entry-timed");
   if (entry.brokenWindow) classes.push("safelearn-entry-broken");
   if (entry.viewSwitch) classes.push("safelearn-entry-switch");
-  if (entry.viewSwitch && !entry.resolvedSwitch) classes.push("safelearn-entry-unresolved");
+  if (entry.viewSwitch && (!entry.resolvedSwitch || entry.conflictingSwitch)) classes.push("safelearn-entry-unresolved");
   return classes.join(" ");
 }
 
@@ -2987,8 +3055,8 @@ function buildDecorations(view: EditorView, marking: DocumentMarking): Decoratio
       if (classes === null) continue;
       ranges.push(
         Decoration.mark(
-          entry.viewSwitch && !entry.resolvedSwitch
-            ? { class: classes, attributes: { title: UNKNOWN_SWITCH_TITLE } }
+          entryTitle(entry) !== null
+            ? { class: classes, attributes: { title: entryTitle(entry) as string } }
             : { class: classes }
         ).range(line.from + entry.index, line.from + entry.index + entry.length)
       );
