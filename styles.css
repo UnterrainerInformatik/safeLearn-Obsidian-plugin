@@ -764,6 +764,10 @@
   --permission-label-fg: #225577;
   --permission-withheld-bg: #b0000012;
   --permission-withheld-border: #b00000aa;
+  /* Solid, so that a nested block's tint covers its parent's instead of adding to it. */
+  --permission-nest-bg-0: color-mix(in srgb, #f5c842 9%, var(--background-primary));
+  --permission-nest-bg-1: color-mix(in srgb, #f5c842 24%, var(--background-primary));
+  --permission-open-border: #e0a800;
 
   --entry-bg: #8899aa18;
   --entry-border: #8899aacc;
@@ -790,6 +794,9 @@
   --permission-label-fg: #b2dfdb;
   --permission-withheld-bg: #ff525214;
   --permission-withheld-border: #ff5252aa;
+  --permission-nest-bg-0: color-mix(in srgb, #e8c341 6%, var(--background-primary));
+  --permission-nest-bg-1: color-mix(in srgb, #e8c341 17%, var(--background-primary));
+  --permission-open-border: #ffd23f;
 
   --entry-bg: #8899aa14;
   --entry-border: #8899aa99;
@@ -804,4 +811,513 @@
   --side-block-bg: #2a2a3337;
   --side-block-border: #444466;
   --side-separator-color: #666;
+}
+
+/*
+ * Nested permission blocks (`permission-block-grammar`): a block inside a block
+ * is shown only where both are, and each gets a frame of its own. A line element
+ * can carry one box, so a line inside a nested block draws every frame around it
+ * as background layers - lid and floor of its innermost block, then for each
+ * level from the inside out its two edges and its tint, each level inset by
+ * 6px. The tints are solid and alternate between two shades of the block colour
+ * by level, so a block and the block directly inside it never share a shade and
+ * blocks side by side at one level do. The outermost level's edges are layers
+ * here too, rather than borders, so that every edge is drawn the same way.
+ *
+ * Edges and tints reach a pixel past the element at the top and the bottom: an
+ * image sized to a line of fractional height leaves its last row of pixels
+ * unpainted, and the run of lines showed a seam at every line otherwise.
+ *
+ * The rules repeat per depth because a list of layers cannot be counted out in
+ * CSS. `NEST_DEPTH_DRAWN` in main.ts is how many there are.
+ */
+.permission-nest-start {
+  --nest-lid: var(--permission-border);
+}
+
+.permission-nest-end {
+  --nest-floor: var(--permission-border);
+}
+
+.permission-block.cm-line.permission-nest-start {
+  padding-top: 4px;
+}
+
+.permission-block.cm-line.permission-nest-end {
+  padding-bottom: 4px;
+}
+
+/*
+ * A block that is never closed runs to the end of the document and hides all of
+ * it from the readers it does not admit. Its edges are drawn heavier and in a
+ * stronger yellow from its directive line to the last line of the document, and
+ * it has no floor: there is no closing line for one to stand on.
+ */
+.permission-block.permission-open-0,
+.safelearn-read-block.permission-open-0 {
+  border-left: 3px solid var(--permission-open-border);
+  border-right: 3px solid var(--permission-open-border);
+}
+
+.permission-block:not(.cm-line).permission-open-0 {
+  --safelearn-frame-edge: 3px;
+  --safelearn-frame-border: var(--permission-open-border);
+}
+
+.permission-open-0 {
+  --nest-edge-0: var(--permission-open-border);
+  --nest-w-0: 3px;
+}
+
+.permission-open-1 {
+  --nest-edge-1: var(--permission-open-border);
+  --nest-w-1: 3px;
+}
+
+.permission-open-2 {
+  --nest-edge-2: var(--permission-open-border);
+  --nest-w-2: 3px;
+}
+
+.permission-open-3 {
+  --nest-edge-3: var(--permission-open-border);
+  --nest-w-3: 3px;
+}
+
+.permission-open-4 {
+  --nest-edge-4: var(--permission-open-border);
+  --nest-w-4: 3px;
+}
+
+.permission-open-5 {
+  --nest-edge-5: var(--permission-open-border);
+  --nest-w-5: 3px;
+}
+
+.permission-open-6 {
+  --nest-edge-6: var(--permission-open-border);
+  --nest-w-6: 3px;
+}
+
+.permission-block.permission-depth-1,
+.safelearn-read-block.permission-depth-1 {
+  border-left: none;
+  border-right: none;
+  background-color: var(--permission-nest-bg-0);
+  background-image:
+    linear-gradient(var(--nest-lid, transparent), var(--nest-lid, transparent)),
+    linear-gradient(var(--nest-floor, transparent), var(--nest-floor, transparent)),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0));
+  background-size:
+    calc(100% - 12px) 1px,
+    calc(100% - 12px) 1px,
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    calc(100% - 12px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    calc(100% - 0px) calc(100% + 2px);
+  background-position:
+    left 6px top,
+    left 6px bottom,
+    left 6px top -1px,
+    right 6px top -1px,
+    left 6px top -1px,
+    left 0px top -1px,
+    right 0px top -1px,
+    left 0px top -1px;
+  background-repeat: no-repeat;
+  background-origin: padding-box;
+  background-clip: padding-box;
+}
+
+.permission-block.cm-line.permission-depth-1,
+.safelearn-read-block.permission-depth-1 {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+.permission-block:not(.cm-line).permission-depth-1 {
+  background-origin: content-box;
+  background-repeat: no-repeat, no-repeat, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y;
+}
+
+.permission-block.permission-depth-2,
+.safelearn-read-block.permission-depth-2 {
+  border-left: none;
+  border-right: none;
+  background-color: var(--permission-nest-bg-0);
+  background-image:
+    linear-gradient(var(--nest-lid, transparent), var(--nest-lid, transparent)),
+    linear-gradient(var(--nest-floor, transparent), var(--nest-floor, transparent)),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0)),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0));
+  background-size:
+    calc(100% - 24px) 1px,
+    calc(100% - 24px) 1px,
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    calc(100% - 24px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    calc(100% - 12px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    calc(100% - 0px) calc(100% + 2px);
+  background-position:
+    left 12px top,
+    left 12px bottom,
+    left 12px top -1px,
+    right 12px top -1px,
+    left 12px top -1px,
+    left 6px top -1px,
+    right 6px top -1px,
+    left 6px top -1px,
+    left 0px top -1px,
+    right 0px top -1px,
+    left 0px top -1px;
+  background-repeat: no-repeat;
+  background-origin: padding-box;
+  background-clip: padding-box;
+}
+
+.permission-block.cm-line.permission-depth-2,
+.safelearn-read-block.permission-depth-2 {
+  padding-left: 20px;
+  padding-right: 20px;
+}
+
+.permission-block:not(.cm-line).permission-depth-2 {
+  background-origin: content-box;
+  background-repeat: no-repeat, no-repeat, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y;
+}
+
+.permission-block.permission-depth-3,
+.safelearn-read-block.permission-depth-3 {
+  border-left: none;
+  border-right: none;
+  background-color: var(--permission-nest-bg-0);
+  background-image:
+    linear-gradient(var(--nest-lid, transparent), var(--nest-lid, transparent)),
+    linear-gradient(var(--nest-floor, transparent), var(--nest-floor, transparent)),
+    linear-gradient(var(--nest-edge-3, var(--permission-border)), var(--nest-edge-3, var(--permission-border))),
+    linear-gradient(var(--nest-edge-3, var(--permission-border)), var(--nest-edge-3, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0)),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0));
+  background-size:
+    calc(100% - 36px) 1px,
+    calc(100% - 36px) 1px,
+    var(--nest-w-3, 1px) calc(100% + 2px),
+    var(--nest-w-3, 1px) calc(100% + 2px),
+    calc(100% - 36px) calc(100% + 2px),
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    calc(100% - 24px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    calc(100% - 12px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    calc(100% - 0px) calc(100% + 2px);
+  background-position:
+    left 18px top,
+    left 18px bottom,
+    left 18px top -1px,
+    right 18px top -1px,
+    left 18px top -1px,
+    left 12px top -1px,
+    right 12px top -1px,
+    left 12px top -1px,
+    left 6px top -1px,
+    right 6px top -1px,
+    left 6px top -1px,
+    left 0px top -1px,
+    right 0px top -1px,
+    left 0px top -1px;
+  background-repeat: no-repeat;
+  background-origin: padding-box;
+  background-clip: padding-box;
+}
+
+.permission-block.cm-line.permission-depth-3,
+.safelearn-read-block.permission-depth-3 {
+  padding-left: 26px;
+  padding-right: 26px;
+}
+
+.permission-block:not(.cm-line).permission-depth-3 {
+  background-origin: content-box;
+  background-repeat: no-repeat, no-repeat, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y;
+}
+
+.permission-block.permission-depth-4,
+.safelearn-read-block.permission-depth-4 {
+  border-left: none;
+  border-right: none;
+  background-color: var(--permission-nest-bg-0);
+  background-image:
+    linear-gradient(var(--nest-lid, transparent), var(--nest-lid, transparent)),
+    linear-gradient(var(--nest-floor, transparent), var(--nest-floor, transparent)),
+    linear-gradient(var(--nest-edge-4, var(--permission-border)), var(--nest-edge-4, var(--permission-border))),
+    linear-gradient(var(--nest-edge-4, var(--permission-border)), var(--nest-edge-4, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0)),
+    linear-gradient(var(--nest-edge-3, var(--permission-border)), var(--nest-edge-3, var(--permission-border))),
+    linear-gradient(var(--nest-edge-3, var(--permission-border)), var(--nest-edge-3, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0)),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0));
+  background-size:
+    calc(100% - 48px) 1px,
+    calc(100% - 48px) 1px,
+    var(--nest-w-4, 1px) calc(100% + 2px),
+    var(--nest-w-4, 1px) calc(100% + 2px),
+    calc(100% - 48px) calc(100% + 2px),
+    var(--nest-w-3, 1px) calc(100% + 2px),
+    var(--nest-w-3, 1px) calc(100% + 2px),
+    calc(100% - 36px) calc(100% + 2px),
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    calc(100% - 24px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    calc(100% - 12px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    calc(100% - 0px) calc(100% + 2px);
+  background-position:
+    left 24px top,
+    left 24px bottom,
+    left 24px top -1px,
+    right 24px top -1px,
+    left 24px top -1px,
+    left 18px top -1px,
+    right 18px top -1px,
+    left 18px top -1px,
+    left 12px top -1px,
+    right 12px top -1px,
+    left 12px top -1px,
+    left 6px top -1px,
+    right 6px top -1px,
+    left 6px top -1px,
+    left 0px top -1px,
+    right 0px top -1px,
+    left 0px top -1px;
+  background-repeat: no-repeat;
+  background-origin: padding-box;
+  background-clip: padding-box;
+}
+
+.permission-block.cm-line.permission-depth-4,
+.safelearn-read-block.permission-depth-4 {
+  padding-left: 32px;
+  padding-right: 32px;
+}
+
+.permission-block:not(.cm-line).permission-depth-4 {
+  background-origin: content-box;
+  background-repeat: no-repeat, no-repeat, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y;
+}
+
+.permission-block.permission-depth-5,
+.safelearn-read-block.permission-depth-5 {
+  border-left: none;
+  border-right: none;
+  background-color: var(--permission-nest-bg-0);
+  background-image:
+    linear-gradient(var(--nest-lid, transparent), var(--nest-lid, transparent)),
+    linear-gradient(var(--nest-floor, transparent), var(--nest-floor, transparent)),
+    linear-gradient(var(--nest-edge-5, var(--permission-border)), var(--nest-edge-5, var(--permission-border))),
+    linear-gradient(var(--nest-edge-5, var(--permission-border)), var(--nest-edge-5, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-4, var(--permission-border)), var(--nest-edge-4, var(--permission-border))),
+    linear-gradient(var(--nest-edge-4, var(--permission-border)), var(--nest-edge-4, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0)),
+    linear-gradient(var(--nest-edge-3, var(--permission-border)), var(--nest-edge-3, var(--permission-border))),
+    linear-gradient(var(--nest-edge-3, var(--permission-border)), var(--nest-edge-3, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0)),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0));
+  background-size:
+    calc(100% - 60px) 1px,
+    calc(100% - 60px) 1px,
+    var(--nest-w-5, 1px) calc(100% + 2px),
+    var(--nest-w-5, 1px) calc(100% + 2px),
+    calc(100% - 60px) calc(100% + 2px),
+    var(--nest-w-4, 1px) calc(100% + 2px),
+    var(--nest-w-4, 1px) calc(100% + 2px),
+    calc(100% - 48px) calc(100% + 2px),
+    var(--nest-w-3, 1px) calc(100% + 2px),
+    var(--nest-w-3, 1px) calc(100% + 2px),
+    calc(100% - 36px) calc(100% + 2px),
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    calc(100% - 24px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    calc(100% - 12px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    calc(100% - 0px) calc(100% + 2px);
+  background-position:
+    left 30px top,
+    left 30px bottom,
+    left 30px top -1px,
+    right 30px top -1px,
+    left 30px top -1px,
+    left 24px top -1px,
+    right 24px top -1px,
+    left 24px top -1px,
+    left 18px top -1px,
+    right 18px top -1px,
+    left 18px top -1px,
+    left 12px top -1px,
+    right 12px top -1px,
+    left 12px top -1px,
+    left 6px top -1px,
+    right 6px top -1px,
+    left 6px top -1px,
+    left 0px top -1px,
+    right 0px top -1px,
+    left 0px top -1px;
+  background-repeat: no-repeat;
+  background-origin: padding-box;
+  background-clip: padding-box;
+}
+
+.permission-block.cm-line.permission-depth-5,
+.safelearn-read-block.permission-depth-5 {
+  padding-left: 38px;
+  padding-right: 38px;
+}
+
+.permission-block:not(.cm-line).permission-depth-5 {
+  background-origin: content-box;
+  background-repeat: no-repeat, no-repeat, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y;
+}
+
+.permission-block.permission-depth-6,
+.safelearn-read-block.permission-depth-6 {
+  border-left: none;
+  border-right: none;
+  background-color: var(--permission-nest-bg-0);
+  background-image:
+    linear-gradient(var(--nest-lid, transparent), var(--nest-lid, transparent)),
+    linear-gradient(var(--nest-floor, transparent), var(--nest-floor, transparent)),
+    linear-gradient(var(--nest-edge-6, var(--permission-border)), var(--nest-edge-6, var(--permission-border))),
+    linear-gradient(var(--nest-edge-6, var(--permission-border)), var(--nest-edge-6, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0)),
+    linear-gradient(var(--nest-edge-5, var(--permission-border)), var(--nest-edge-5, var(--permission-border))),
+    linear-gradient(var(--nest-edge-5, var(--permission-border)), var(--nest-edge-5, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-4, var(--permission-border)), var(--nest-edge-4, var(--permission-border))),
+    linear-gradient(var(--nest-edge-4, var(--permission-border)), var(--nest-edge-4, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0)),
+    linear-gradient(var(--nest-edge-3, var(--permission-border)), var(--nest-edge-3, var(--permission-border))),
+    linear-gradient(var(--nest-edge-3, var(--permission-border)), var(--nest-edge-3, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--nest-edge-2, var(--permission-border)), var(--nest-edge-2, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0)),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--nest-edge-1, var(--permission-border)), var(--nest-edge-1, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-1), var(--permission-nest-bg-1)),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--nest-edge-0, var(--permission-border)), var(--nest-edge-0, var(--permission-border))),
+    linear-gradient(var(--permission-nest-bg-0), var(--permission-nest-bg-0));
+  background-size:
+    calc(100% - 72px) 1px,
+    calc(100% - 72px) 1px,
+    var(--nest-w-6, 1px) calc(100% + 2px),
+    var(--nest-w-6, 1px) calc(100% + 2px),
+    calc(100% - 72px) calc(100% + 2px),
+    var(--nest-w-5, 1px) calc(100% + 2px),
+    var(--nest-w-5, 1px) calc(100% + 2px),
+    calc(100% - 60px) calc(100% + 2px),
+    var(--nest-w-4, 1px) calc(100% + 2px),
+    var(--nest-w-4, 1px) calc(100% + 2px),
+    calc(100% - 48px) calc(100% + 2px),
+    var(--nest-w-3, 1px) calc(100% + 2px),
+    var(--nest-w-3, 1px) calc(100% + 2px),
+    calc(100% - 36px) calc(100% + 2px),
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    var(--nest-w-2, 1px) calc(100% + 2px),
+    calc(100% - 24px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    var(--nest-w-1, 1px) calc(100% + 2px),
+    calc(100% - 12px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    var(--nest-w-0, 1px) calc(100% + 2px),
+    calc(100% - 0px) calc(100% + 2px);
+  background-position:
+    left 36px top,
+    left 36px bottom,
+    left 36px top -1px,
+    right 36px top -1px,
+    left 36px top -1px,
+    left 30px top -1px,
+    right 30px top -1px,
+    left 30px top -1px,
+    left 24px top -1px,
+    right 24px top -1px,
+    left 24px top -1px,
+    left 18px top -1px,
+    right 18px top -1px,
+    left 18px top -1px,
+    left 12px top -1px,
+    right 12px top -1px,
+    left 12px top -1px,
+    left 6px top -1px,
+    right 6px top -1px,
+    left 6px top -1px,
+    left 0px top -1px,
+    right 0px top -1px,
+    left 0px top -1px;
+  background-repeat: no-repeat;
+  background-origin: padding-box;
+  background-clip: padding-box;
+}
+
+.permission-block.cm-line.permission-depth-6,
+.safelearn-read-block.permission-depth-6 {
+  padding-left: 44px;
+  padding-right: 44px;
+}
+
+.permission-block:not(.cm-line).permission-depth-6 {
+  background-origin: content-box;
+  background-repeat: no-repeat, no-repeat, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y, repeat-y;
 }

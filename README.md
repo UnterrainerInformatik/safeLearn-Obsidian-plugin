@@ -55,6 +55,10 @@ A directive on the **first line** gates the whole file. It has no closing marker
 
 ![A whole-file directive](assets/whole-file.png)
 
+**Blocks nest.** An `@@@` line inside a block opens a block inside it, and each `@@@` on its own closes the innermost one. A nested block is read only by those who would read every block around it — `@@@ teacher` inside `@@@ 4bhif` means the teachers of 4BHIF. Each level gets its own frame, inset in the one around it, and the shade alternates from one level to the next so you can tell where you are.
+
+A block that is **never closed** runs to the end of the document and hides all of it from everyone it does not admit. It is drawn with heavy yellow edges and no floor, down to the last line, until you write its closing `@@@`. Forgetting the closing line of an *inner* block is the easy way to get there: the closing line that follows then closes the inner block and leaves the outer one open.
+
 Reading view: the tags are gone, the headings remain.
 
 ![Restricted blocks in the reading view](assets/permission-reading.png)

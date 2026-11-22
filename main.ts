@@ -2440,10 +2440,25 @@ async function hideTags(el: HTMLElement, ctx: MarkdownPostProcessorContext, plug
   // last. Every block covering this section is asked, not the first one found -
   // a paragraph holding one block's closing marker and the next one's directive
   // is the lid of the second as much as the floor of the first.
-  for (const block of covering("permission")) {
+  const permissions = covering("permission");
+  for (const block of permissions) {
+    if (block.depth > 0) continue;
     el.addClass("safelearn-read-block");
     if (opens(block)) el.addClass("safelearn-read-block-start");
-    if (closes(block)) el.addClass("safelearn-read-block-end");
+    // A block that is never closed has no floor, as in the editor.
+    if (closes(block) && block.closed) el.addClass("safelearn-read-block-end");
+    if (!block.closed) el.addClass("permission-open-0");
+  }
+  // A section is one element, so it carries the frames of the deepest block
+  // covering it, drawn by the editor's classes for nested lines.
+  const deepest = permissions.reduce<Block | null>((found, block) => (found === null || block.depth > found.depth ? block : found), null);
+  if (deepest !== null && deepest.depth > 0) {
+    el.addClass(`permission-depth-${Math.min(deepest.depth, NEST_DEPTH_DRAWN)}`);
+    if (opens(deepest)) el.addClass("permission-nest-start");
+    if (closes(deepest) && deepest.closed) el.addClass("permission-nest-end");
+    for (const block of permissions) {
+      if (!block.closed && block.depth > 0) el.addClass(`permission-open-${Math.min(block.depth, NEST_DEPTH_DRAWN)}`);
+    }
   }
   if (fileDirective !== null && fileDirective >= from && fileDirective <= to) {
     el.addClass("safelearn-read-file");
@@ -2667,6 +2682,14 @@ async function renderColumns(
 
 // ################### The blocks a document is made of ###################
 
+/**
+ * How many levels of nested frames the stylesheet draws. Each level is a set of
+ * background layers written out in `styles.css`, so the number is finite; a
+ * block nested deeper than this is drawn as a block of this depth. Teaching
+ * material nests two or three deep, if at all.
+ */
+const NEST_DEPTH_DRAWN = 6;
+
 type Block = {
   kind: "permission" | "side-by-side";
   from: number;
@@ -2680,6 +2703,12 @@ type Block = {
    */
   closed: boolean;
   separators: number[];
+  /**
+   * How many permission blocks enclose this one: 0 for a block no other block
+   * encloses. Permission blocks nest like brackets (`permission-block-grammar`);
+   * a side-by-side block is always 0.
+   */
+  depth: number;
 };
 
 /**
@@ -2744,7 +2773,10 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
   // Marker lines inside a closed code fence are code, for a permission block.
   const fenced = fencedLines(lines, start);
 
-  let permissionFrom = -1;
+  // The permission blocks still open, outermost first, as their index in
+  // `blocks`: a block is listed when it opens, so permission blocks come in the
+  // order they open, the order the server lists them in.
+  const open: number[] = [];
   let sideFrom = -1;
   let separators: number[] = [];
 
@@ -2753,15 +2785,18 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
 
     if (fenced.has(i)) {
       // Neither an opening nor a closing permission marker.
-    } else if (permissionFrom === -1) {
-      if (opensPermissionBlock(text)) {
-        permissionFrom = i;
-        continue;
-      }
-      // A closing marker with nothing open closes nothing and opens nothing.
-    } else if (closesPermissionBlock(text)) {
-      blocks.push({ kind: "permission", from: permissionFrom, to: i, closed: true, separators: [] });
-      permissionFrom = -1;
+    } else if (opensPermissionBlock(text)) {
+      // Inside an open block too: an opener there opens a block nested in it.
+      // Until a closing line says otherwise it runs to the end of the document.
+      blocks.push({ kind: "permission", from: i, to: lines.count, closed: false, separators: [], depth: open.length });
+      open.push(blocks.length - 1);
+      continue;
+    } else if (open.length > 0 && closesPermissionBlock(text)) {
+      // A closing line closes the innermost open block. One with nothing open
+      // closes nothing and opens nothing.
+      const block = blocks[open.pop() as number];
+      block.to = i;
+      block.closed = true;
       continue;
     }
 
@@ -2772,7 +2807,7 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
         continue;
       }
     } else if (isMarkerLine(text, SIDE_BY_SIDE_END)) {
-      blocks.push({ kind: "side-by-side", from: sideFrom, to: i, closed: true, separators });
+      blocks.push({ kind: "side-by-side", from: sideFrom, to: i, closed: true, separators, depth: 0 });
       sideFrom = -1;
       continue;
     } else if (isMarkerLine(text, SEPARATOR)) {
@@ -2783,12 +2818,10 @@ function resolveBlocks(lines: LineSource): DocumentStructure {
   }
 
   // A block that is never closed ends at the end of the document and marks what
-  // it covered, rather than costing everything after it its marking.
-  if (permissionFrom !== -1) {
-    blocks.push({ kind: "permission", from: permissionFrom, to: lines.count, closed: false, separators: [] });
-  }
+  // it covered, rather than costing everything after it its marking. Every
+  // permission block still open already says so; it was listed that way.
   if (sideFrom !== -1) {
-    blocks.push({ kind: "side-by-side", from: sideFrom, to: lines.count, closed: false, separators });
+    blocks.push({ kind: "side-by-side", from: sideFrom, to: lines.count, closed: false, separators, depth: 0 });
   }
 
   return { blocks, fileDirective, fenced };
@@ -2960,23 +2993,55 @@ function markLines(doc: Text): DocumentMarking {
     if (withholdsFromEveryone(entries)) carries(line, "permission-withheld");
   }
 
+  // Permission blocks nest, and a line element can carry only one box. So each
+  // line is classified by the innermost block covering it: its depth, whether
+  // the line is that block's first or last, and which of the levels around it
+  // are never closed. The stylesheet draws the frames of every level from that.
+  const innermost = new Map<number, Block>();
+  const openLevels = new Map<number, number[]>();
   for (const block of blocks) {
+    if (block.kind !== "permission") continue;
     for (let i = block.from; i <= block.to; i++) {
-      if (block.kind === "permission") {
-        // Every line of the block, and its two ends besides. A box is drawn one
-        // element at a time, so which side of it a line is on is something the
-        // marking has to say - the side-by-side block is drawn the same way for
-        // the same reason. It is no new conclusion about the document: the
-        // block's first and last line are what `resolveBlocks` already found.
-        carries(i, "permission-block");
-        if (i === block.from) carries(i, "permission-block-start");
-        if (i === block.to) carries(i, "permission-block-end");
-      } else {
-        carries(
-          i,
-          i === block.from ? "side-by-side-start" : i === block.to ? "side-by-side-end" : "side-by-side-block"
-        );
+      // Blocks come in the order they open, so a nested block is seen after the
+      // block around it and takes the lines it covers over from it.
+      innermost.set(i, block);
+      if (!block.closed) {
+        const levels = openLevels.get(i);
+        if (levels) levels.push(block.depth);
+        else openLevels.set(i, [block.depth]);
       }
+    }
+  }
+  for (const [i, block] of innermost) {
+    // Every line of the block, and its two ends besides. A box is drawn one
+    // element at a time, so which side of it a line is on is something the
+    // marking has to say - the side-by-side block is drawn the same way for the
+    // same reason. It is no new conclusion about the document: the block's
+    // first and last line are what `resolveBlocks` already found.
+    carries(i, "permission-block");
+    const depth = Math.min(block.depth, NEST_DEPTH_DRAWN);
+    if (depth === 0) {
+      if (i === block.from) carries(i, "permission-block-start");
+      // A block that is never closed has no floor: it runs on to the end of the
+      // document, and the open marking below says so.
+      if (i === block.to && block.closed) carries(i, "permission-block-end");
+    } else {
+      carries(i, `permission-depth-${depth}`);
+      if (i === block.from) carries(i, "permission-nest-start");
+      if (i === block.to && block.closed) carries(i, "permission-nest-end");
+    }
+    for (const level of openLevels.get(i) ?? []) {
+      carries(i, `permission-open-${Math.min(level, NEST_DEPTH_DRAWN)}`);
+    }
+  }
+
+  for (const block of blocks) {
+    if (block.kind === "permission") continue;
+    for (let i = block.from; i <= block.to; i++) {
+      carries(
+        i,
+        i === block.from ? "side-by-side-start" : i === block.to ? "side-by-side-end" : "side-by-side-block"
+      );
     }
     for (const line of block.separators) carries(line, "side-by-side-separator");
   }
@@ -3087,6 +3152,10 @@ const BLOCK_CLASSES = Object.freeze([
   "permission-block",
   "permission-block-start",
   "permission-block-end",
+  "permission-nest-start",
+  "permission-nest-end",
+  ...Array.from({ length: NEST_DEPTH_DRAWN }, (_, index) => `permission-depth-${index + 1}`),
+  ...Array.from({ length: NEST_DEPTH_DRAWN + 1 }, (_, index) => `permission-open-${index}`),
   "side-by-side-start",
   "side-by-side-block",
   "side-by-side-end",
